@@ -2,9 +2,9 @@
   "name": "lottery-bot",
   "version": "1.0.0",
   "description": "Telegram Lottery Bot - Node.js",
-  "main": "index.js",
+  "main": "bot.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node bot.js"
   },
   "dependencies": {
     "grammy": "^1.26.0",
