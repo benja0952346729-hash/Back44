@@ -446,36 +446,51 @@ ${adminRules}
 ተጠቃሚ: ${userName} (ID:${userId})
 መልእክት: "${userMessage}"
 
-=== INTENT RULES (ምንም spelling ወይም ቋንቋ ቢጠቀም intent-ን ተረዳ) ===
+
+=== INTENT RULES (ምንም spelling፣ ቋንቋ፣ ወይም አጻጻፍ ቢጠቀም INTENT ተረዳ) ===
+
+አስፈላጊ: ሰዎች perfect አይጽፉም። የተሳሳተ spelling፣ mixed language፣ አጭር ቃላት ሁሉ ተረዳ።
 
 1. HALF BOOKING intent:
-   - ምልክቶች: +, half, gmash, gemash, ግማሽ, 1/2, gmash, hafF, haf
+   - ትርጉም: ቁጥሩን በግማሽ ዋጋ መያዝ
+   - ምልክቶች/ቃላት: +, half, gmash, gemash, ግማሽ, 1/2, haf, gmas, በግማሽ, ፍርድ, ሃፍ
    - action: book_half_p1 (single) ወይም book_multiple type:"half"
 
 2. FULL BOOKING intent:
+   - ትርጉም: ቁጥሩን ሙሉ ዋጋ መያዝ
    - ቁጥር ብቻ ሲጽፍ = full booking
    - action: book_full ወይም book_multiple type:"full"
 
-3. ቀይር intent (cancel_and_rebook):
-   - ቃላት: ወደ, በ, change, from, to, replace, ቀይር, ቀይረው, ቀይርልኝ, swap
+3. ቀይር/ተካ intent (cancel_and_rebook):
+   - ትርጉም: አንድ ቁጥር ሰርዞ ሌላ ቁጥር መያዝ
+   - ምልክቶች/ቃላት: ወደ, በ, change, from, to, replace, ቀይር, ቀይረው, ቀይርልኝ, swap, ትካው, ምትካ, argew, arg, mels, መልስ, cancel and add, sriz and yaz, ሰርዝና ያዝ, kutr X mels Y, X ትካ Y
    - format: {"action":"cancel_and_rebook","cancel_number":X,"book_number":Y,"book_type":"full","name":"${bookingName}","reply":"እሺ ቀይረናል 🙏"}
 
 4. ስም ጠቅሶ ያዝ intent:
-   - ቃላት: ያዝ, set, bel, ble, በል, hold, ብለህ, ብላ, ስም, name
+   - ትርጉም: የሌላ ሰው ስም ጠቅሶ booking ማድረግ
+   - ቃላት: ያዝ, set, bel, ble, በል, hold, ብለህ, ብላ, ስም, name, yaz, blo, bleh
    - format: {"action":"book_full","number":X,"name":"[ያ ስም]","reply":"እሺ [ስም] ብለህ ተይዟል 🙏"}
 
 5. ሰርዝ intent:
-   - ቃላት: ሰርዝ, cancel, remove, አልፈልግም, አውጣ, delete, sriz, sarez
+   - ትርጉም: የያዘውን ቁጥር መሰረዝ
+   - ቃላት: ሰርዝ, cancel, remove, አልፈልግም, አውጣ, delete, sriz, sarez, argew, arg, alfelgm, አልፈልገውም, አታስቀምጥ
    - format: {"action":"cancel","number":X,"reply":"እሺ ተሰርዟል 🙏"}
 
 6. ነፃ slot ጥያቄ intent:
-   - ቃላት: አለ?, ነፃ, free, yale, ale, ቁጥር አለ, available
+   - ትርጉም: ምን ቁጥሮች ነፃ እንደሆኑ መጠየቅ
+   - ቃላት: አለ?, ነፃ, free, yale, ale, ቁጥር አለ, available, yale, menfes, ክፍት
    - format: {"action":"reply","reply":"✅ ነፃ slots: [ዝርዝር]"}
 
 7. NICKNAME intent:
-   - ቃላት: ለኔ...በል, ስሜ, my name, call me, nickname
+   - ትርጉም: ስም መቀየር ወይም መስጠት
+   - ቃላት: ለኔ...በል, ስሜ, my name, call me, nickname, sme, semé
    - format: {"action":"save_nickname","nickname":"[ስም]","reply":"እሺ ተቀይሯል 🙏"}
 
+8. CHANGE TYPE intent:
+   - ትርጉም: ሙሉ → ግማሽ ወይም ግማሽ → ሙሉ መቀየር
+   - ቃላት: ሙሉ አድርግ, ግማሽ አድርግ, make full, make half, full yarg, half yarg
+   - format: {"action":"change_type","number":X,"new_type":"full/half","reply":"እሺ ተቀይሯል 🙏"}
+   
 === IMPORTANT RULES ===
 - የተያዘ slot → "ተቀድመሃል ቤተሰብ 🙏"
 - እራሱ ያዘ → "ይዥሃለሁ ቤተሰብ 🙏"
@@ -484,7 +499,7 @@ ${adminRules}
 - nickname ካለ ሁሌ nickname ተጠቀም
 
 JSON ብቻ:`;
-  const raw = await geminiCall(prompt, 250, 0.1);
+  const raw = await geminiCall(prompt, 250, 0.7);
   console.log("🧠 AI raw:", raw);
 
   try {
