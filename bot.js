@@ -421,15 +421,20 @@ ${adminRules}
 
 አስፈላጊ: ሰዎች perfect አይጽፉም። የተሳሳተ spelling፣ mixed language፣ አጭር ቃላት ሁሉ ተረዳ።
 
-1. HALF BOOKING intent:
-   - ትርጉም: ቁጥሩን በግማሽ ዋጋ መያዝ
-   - ምልክቶች/ቃላት: +, half, gmash, gemash, ግማሽ, 1/2, haf, gmas, በግማሽ, ፍርድ, ሃፍ
-   - action: book_half_p1 (single) ወይም book_multiple type:"half"
+1. BOOKING intent — + ምልክት ያለው = ግማሽ፣ የሌለው = ሙሉ:
+   - ⚠️ ቁጥር ላይ "+" ምልክት ካለ = ግማሽ (half)
+   - ⚠️ ቁጥር ላይ "+" ምልክት ከሌለ = ሙሉ (full)
+   - ምሳሌ: "91+" = 91 ግማሽ → book_half_p1
+   - ምሳሌ: "96" = 96 ሙሉ → book_full
+   - ምሳሌ: "91+ 96" = 91 ግማሽ + 96 ሙሉ → book_multiple mixed
+   - ምሳሌ: "91+ 96+" = ሁለቱም ግማሽ → book_multiple half
+   - ምሳሌ: "91 96" = ሁለቱም ሙሉ → book_multiple full
 
-2. FULL BOOKING intent:
-   - ትርጉም: ቁጥሩን ሙሉ ዋጋ መያዝ
-   - ቁጥር ብቻ ሲጽፍ = full booking
-   - action: book_full ወይም book_multiple type:"full"
+   አንድ ቁጥር ሙሉ: {"action":"book_full","number":X,"name":"${bookingName}","reply":"እሺ ሙሉ ተይዟል 🙏"}
+   አንድ ቁጥር ግማሽ: {"action":"book_half_p1","number":X,"name":"${bookingName}","reply":"እሺ ግማሽ ተይዟል 🙏"}
+   ብዙ ቁጥሮች: {"action":"book_multiple","bookings":[{"number":91,"type":"half"},{"number":96,"type":"full"}],"name":"${bookingName}","reply":"እሺ ተይዟል 🙏"}
+
+   ሌሎች የግማሽ ቃላት (ሁሉም ቁጥሮች ግማሽ ማለት): half, gmash, gemash, ግማሽ, 1/2, haf, gmas, በግማሽ, ሃፍ
 
 3. ቀይር/ተካ intent (cancel_and_rebook):
    - ትርጉም: አንድ ቁጥር ሰርዞ ሌላ ቁጥር መያዝ
@@ -448,7 +453,7 @@ ${adminRules}
 
 6. ነፃ slot ጥያቄ intent:
    - ትርጉም: ምን ቁጥሮች ነፃ እንደሆኑ መጠየቅ
-   - ቃላት: አለ?, ነፃ, free, yale, ale, ቁጥር አለ, available, yale, menfes, ክፍት
+   - ቃላት: አለ?, ነፃ, free, yale, ale, ቁጥር አለ, available, menfes, ክፍት
    - format: {"action":"reply","reply":"✅ ነፃ slots: [ዝርዝር]"}
 
 7. NICKNAME intent:
@@ -456,10 +461,28 @@ ${adminRules}
    - ቃላት: ለኔ...በል, ስሜ, my name, call me, nickname, sme, semé
    - format: {"action":"save_nickname","nickname":"[ስም]","reply":"እሺ ተቀይሯል 🙏"}
 
-8. CHANGE TYPE intent:
-   - ትርጉም: ሙሉ → ግማሽ ወይም ግማሽ → ሙሉ መቀየር
-   - ቃላት: ሙሉ አድርግ, ግማሽ አድርግ, make full, make half, full yarg, half yarg
-   - format: {"action":"change_type","number":X,"new_type":"full/half","reply":"እሺ ተቀይሯል 🙏"}
+8. CHANGE TYPE intent — ትልቅ ትኩረት ያስፈልጋል:
+   - ትርጉም: ቀድሞ የያዘ ቁጥር ከግማሽ → ሙሉ ወይም ሙሉ → ግማሽ መቀየር
+   - ቃላት: mulu, ሙሉ, full, mulu yarg, full adrg, ሙሉ አድርግ, ሙሉ አርግ, gmash, ግማሽ, half, gmash adrg, ግማሽ አድርግ, half yarg
+   - ⚠️ BOOKING አይደለም — TYPE CHANGE ነው!
+   - ምሳሌ: "91+ mulu አርግ" = 91 ያዘ ነበር (ግማሽ) → ሙሉ ቀይር → change_type
+   - ምሳሌ: "91 mulu" = 91 ያዘ ነበር → ሙሉ ቀይር → change_type
+
+   CASE A — አንድ ቁጥር ብቻ (ቀጥታ ቀይር):
+   {"action":"change_type","number":X,"new_type":"full","reply":"እሺ ሙሉ ሆነ 🙏"}
+
+   CASE B — ብዙ ቁጥሮች specific (ሁለቱንም ቀይር):
+   - "31 21 mulu አርግ" → ሁለቱንም change_type
+   {"action":"change_type_multiple","numbers":[31,21],"new_type":"full","reply":"እሺ ሁለቱም ሙሉ ሆኑ 🙏"}
+
+   CASE C — "አርጋቸው" / "ሁሉንም" / "ሁሉም" (user ያዛቸውን ሁሉ ቀይር):
+   - "ሙሉ አርጋቸው", "ሁሉንም full አድርግ", "ሁሉም mulu yarg"
+   - user ያዛቸውን slots ሁሉ ከ state ውስጥ ፈልግ → ሁሉንም ቀይር
+   {"action":"change_type_multiple","numbers":[X,Y,Z],"new_type":"full","reply":"እሺ ሁሉም ሙሉ ሆኑ 🙏"}
+
+   CASE D — አሻሚ (ቁጥር አልጠቀሰም፣ ብዙ slots አለው):
+   - user ብዙ slots ካለው እና ቁጥር ሳይጠቅስ "mulu አርግ" ካለ → ጠይቅ
+   {"action":"ask","reply":"የቱን ቁጥር ሙሉ ላድርግ? ያዝካቸው ቁጥሮች: [ዝርዝር]"}
 
 === IMPORTANT RULES ===
 - የተያዘ slot → {"action":"reply","reply":"ተቀድመሃል ቤተሰብ 🙏"}
@@ -468,6 +491,7 @@ ${adminRules}
 - leading zero: "01"=1, "06"=6, "09"=9
 - nickname ካለ ሁሌ nickname ተጠቀም
 - reply field ሁሌ ሙሉ አማርኛ መልስ ይኑረው — ባዶ አይሁን
+- "mulu/full + ቁጥር" = CHANGE TYPE እንጂ NEW BOOKING አይደለም!
 
 JSON ብቻ ምለስ:`;
 
@@ -617,6 +641,26 @@ function executeAction(actionData, userId, data) {
         data.slots[slotId].p2_paid = false;
       }
       changed = true;
+    }
+  } else if (action === "change_type_multiple") {
+    const numbers = actionData.numbers || [];
+    const newType = actionData.new_type || "full";
+    for (const num of numbers) {
+      const [slotId, slot] = getSlotByNumber(num, data);
+      if (slotId && slot.type) {
+        if (newType === "full") {
+          data.slots[slotId].type = "full";
+          data.slots[slotId].p2_id = null;
+          data.slots[slotId].p2_name = null;
+          data.slots[slotId].p2_paid = false;
+        } else if (newType === "half") {
+          data.slots[slotId].type = "half";
+          data.slots[slotId].p2_id = null;
+          data.slots[slotId].p2_name = null;
+          data.slots[slotId].p2_paid = false;
+        }
+        changed = true;
+      }
     }
   }
 
