@@ -1,25 +1,36 @@
 const { Bot } = require("grammy");
 const { Pool } = require("pg");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const Groq = require("groq-sdk");
 const http = require("http");
 
 // ==================== CONFIG ====================
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_TELEGRAM_ID  = parseInt(process.env.ADMIN_TELEGRAM_ID || "0");
 const DATABASE_URL       = process.env.DATABASE_URL;
+const GROQ_API_KEY       = process.env.GROQ_API_KEY;
 
-// ==================== GEMINI MULTI-KEY ROTATION ====================
-const GEMINI_KEYS = [
-  process.env.GEMINI_API_KEY_1,  process.env.GEMINI_API_KEY_2,
-  process.env.GEMINI_API_KEY_3,  process.env.GEMINI_API_KEY_4,
-  process.env.GEMINI_API_KEY_5,  process.env.GEMINI_API_KEY_6,
-  process.env.GEMINI_API_KEY_7,  process.env.GEMINI_API_KEY_8,
-  process.env.GEMINI_API_KEY_9,  process.env.GEMINI_API_KEY_10,
-].filter(Boolean);
+// ==================== GROQ CLIENT ====================
+const groq = new Groq({ apiKey: GROQ_API_KEY });
 
-let geminiKeyIndex = 0;
-const exhaustedKeys = new Set();
-  ,
+async function groqCall(systemPrompt, userPrompt, maxTokens = 300, temperature = 0.1) {
+  try {
+    const completion = await groq.chat.completions.create({
+      model: "gemma2-9b-it",
+      max_tokens: maxTokens,
+      temperature,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+    });
+    const text = completion.choices[0]?.message?.content?.trim() || "";
+    console.log("✅ Groq OK");
+    return text;
+  } catch (e) {
+    console.error("❌ Groq error:", e.message);
+    return "";
+  }
+}
 
 // ==================== LOTTERY TEMPLATE ====================
 const LOTTERY_TEMPLATE = `በ 400 ብር 5 ቁጥሮችን በተከታታይ በመያዝ እድሎን ይሞክሩ ለ 20 ሰው ብቻ ፈጣን ዕድል መልካም ዕድል
@@ -70,7 +81,6 @@ async function initDb() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
-    // ✅ NEW: lottery state table (replaces lottery_data.json)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS lottery_state (
         id                  SERIAL PRIMARY KEY,
@@ -80,7 +90,6 @@ async function initDb() {
         updated_at          TIMESTAMPTZ DEFAULT NOW()
       )
     `);
-    // Ensure there is always exactly one row
     await pool.query(`
       INSERT INTO lottery_state (slots, lottery_message_id, chat_id)
       SELECT $1::jsonb, NULL, NULL
@@ -99,7 +108,7 @@ async function initDb() {
   }
 }
 
-// ==================== LOTTERY STATE (DB) ====================
+// ==================== LOTTERY STATE ====================
 
 function makeEmptySlot(i) {
   const start = (i - 1) * 5 + 1;
@@ -123,7 +132,6 @@ async function loadData() {
       "SELECT slots, lottery_message_id, chat_id FROM lottery_state ORDER BY id LIMIT 1"
     );
     if (res.rows.length === 0) {
-      // Fallback — should not happen after initDb
       return { slots: buildEmptySlots(), lottery_message_id: null, chat_id: null };
     }
     const row = res.rows[0];
@@ -182,7 +190,6 @@ async function loadAdminRules() {
 async function saveAdminRule(rule) {
   try {
     await pool.query("INSERT INTO admin_rules (rule) VALUES ($1)", [rule]);
-    console.log("✅ Rule saved:", rule);
   } catch (e) {
     console.error("❌ saveAdminRule error:", e);
   }
@@ -195,6 +202,7 @@ async function deleteAllAdminRules() {
     console.error("❌ deleteAllAdminRules error:", e);
   }
 }
+
 async function getUserNickname(userId) {
   try {
     const res = await pool.query(
@@ -202,7 +210,6 @@ async function getUserNickname(userId) {
     );
     return res.rows.length ? res.rows[0].nickname : null;
   } catch (e) {
-    console.error("❌ getUserNickname error:", e);
     return null;
   }
 }
@@ -219,6 +226,7 @@ async function saveUserNickname(userId, nickname) {
     console.error("❌ saveUserNickname error:", e);
   }
 }
+
 async function buildAdminRulesText() {
   const rules = await loadAdminRules();
   if (!rules.length) return "";
@@ -235,7 +243,6 @@ async function loadAdminChatHistory(limit = 20) {
     );
     return res.rows.reverse().map(r => ({ role: r.role, content: r.content }));
   } catch (e) {
-    console.error("❌ loadAdminChatHistory error:", e);
     return [];
   }
 }
@@ -344,49 +351,9 @@ function buildShortState(data) {
   return lines.join("\n");
 }
 
-// ==================== GEMINI ====================
+// ==================== ADMIN CHAT ====================
 
-async function geminiCall(prompt, maxTokens = 300, temperature = 0.1) {
-  if (exhaustedKeys.size >= GEMINI_KEYS.length) {
-    exhaustedKeys.clear();
-    console.log("🔄 ሁሉም keys exhausted — reset ተደረገ");
-  }
-
-  for (let attempt = 0; attempt < GEMINI_KEYS.length; attempt++) {
-    const keyIdx = geminiKeyIndex % GEMINI_KEYS.length;
-    geminiKeyIndex++;
-
-    if (exhaustedKeys.has(keyIdx)) continue;
-
-    const key        = GEMINI_KEYS[keyIdx];
-    const keyPreview = key.slice(0, 8) + "...";
-    try {
-      const genAI = new GoogleGenerativeAI(key);
-      const model = genAI.getGenerativeModel({
-        model: "gemini-2.5-flash-lite",
-        generationConfig: { maxOutputTokens: maxTokens, temperature },
-      });
-      const result = await model.generateContent(prompt);
-      const text   = result.response.text().trim();
-      console.log(`✅ Gemini OK (key ${keyIdx + 1}: ${keyPreview})`);
-      return text;
-    } catch (e) {
-      const err = String(e);
-      if (err.includes("RESOURCE_EXHAUSTED") || err.toLowerCase().includes("quota") || err.includes("429")) {
-        exhaustedKeys.add(keyIdx);
-        console.log(`⚠️ Key ${keyIdx + 1} exhausted — ተዘሉ`);
-        continue;
-      }
-      console.log(`⚠️ Gemini error (key ${keyIdx + 1}):`, err);
-    }
-  }
-  console.log("🔴 ሁሉም Gemini keys exhausted ናቸው");
-  return "";
-}
-
-// ==================== ADMIN GEMINI CHAT ====================
-
-async function adminGeminiChat(userMessage, data) {
+async function adminGroqChat(userMessage, data) {
   const fullState  = buildShortState(data);
   const adminRules = await buildAdminRulesText();
   const history    = await loadAdminChatHistory(15);
@@ -395,7 +362,7 @@ async function adminGeminiChat(userMessage, data) {
     ? history.map(m => `${m.role === "user" ? "Admin" : "Bot"}: ${m.content}`).join("\n")
     : "";
 
-  const prompt = `አንተ ሙሉ የሎተሪ ስርዓት Gemini ነህ። Admin ጋር private ታወራለህ።
+  const systemPrompt = `አንተ ሙሉ የሎተሪ ስርዓት AI ነህ። Admin ጋር private ታወራለህ።
 ሁሉንም ታወቃለህ — slots፣ ተጫዋቾች፣ ክፍያ፣ ህጎች።
 
 የሎተሪ ሁኔታ:
@@ -406,18 +373,16 @@ ${fullState}
 ታሪክ:
 ${historyText}
 
-Admin: ${userMessage}
-
 መመሪያ:
-- አማርኛ ብቻ
+- አማርኛ ብቻ ተጠቀም
 - ህግ ሲጨምር → [SAVE_RULE: ህጉን ፃፍ]
 - ህጎች ሲሰረዙ → [DELETE_RULES]
-- አጭር፣ ግልጽ መልስ`;
+- አጭር፣ ግልጽ መልስ ስጥ`;
 
-  return geminiCall(prompt, 400, 0.3);
+  return groqCall(systemPrompt, userMessage, 400, 0.3);
 }
 
-function processAdminGeminiResponse(response) {
+function processAdminResponse(response) {
   const newRules = [];
   let deleteAll  = false;
   let clean      = response;
@@ -442,76 +407,43 @@ async function aiBrain(userMessage, userId, userName, data) {
   const fullState    = buildShortState(data);
   const adminRules   = await buildAdminRulesText();
   const savedNick    = await getUserNickname(userId);
-  const displayName  = savedNick || userName;
+  const bookingName  = savedNick || userName;
 
- const bookingName = savedNick || userName;
-
-  const prompt = `አንተ የሎተሪ booking bot ነህ። JSON ብቻ መልስ። ምንም explanation አትጨምር።
+  const systemPrompt = `አንተ የሎተሪ booking bot ነህ። JSON ብቻ መልስ። ምንም explanation አትጨምር።
 
 nickname: ${savedNick ? `"${savedNick}"` : "የለም"}
 ሁኔታ: ${fullState}
 ${adminRules}
-ተጠቃሚ: ${userName} (ID:${userId})
-መልእክት: "${userMessage}"
 
+=== INTENT RULES ===
+ማስታወሻ: User አማርኛ፣ Latin (transliteration)፣ ወይም mixed ሊጽፍ ይችላል። ሁሉንም ተረዳ።
 
-=== INTENT RULES (ምንም spelling፣ ቋንቋ፣ ወይም አጻጻፍ ቢጠቀም INTENT ተረዳ) ===
+1. HALF BOOKING: +, half, gmash, gemash, ግማሽ, 1/2, haf → book_half_p1
+2. FULL BOOKING: ቁጥር ብቻ → book_full
+3. ቀይር/ተካ: ወደ, change, ቀይር, swap → cancel_and_rebook
+4. ስም ጠቅሶ ያዝ: ያዝ, yaz, hold, ብለህ → book_full with that name
+5. ሰርዝ: ሰርዝ, cancel, sriz, alfelgm → cancel
+6. ነፃ slot: አለ?, free, yale, ክፍት → reply with free slots
+7. NICKNAME: ስሜ, call me, nickname → save_nickname
+8. CHANGE TYPE: ሙሉ አድርግ, ግማሽ አድርግ → change_type
 
-አስፈላጊ: ሰዎች perfect አይጽፉም። የተሳሳተ spelling፣ mixed language፣ አጭር ቃላት ሁሉ ተረዳ።
-
-1. HALF BOOKING intent:
-   - ትርጉም: ቁጥሩን በግማሽ ዋጋ መያዝ
-   - ምልክቶች/ቃላት: +, half, gmash, gemash, ግማሽ, 1/2, haf, gmas, በግማሽ, ፍርድ, ሃፍ
-   - action: book_half_p1 (single) ወይም book_multiple type:"half"
-
-2. FULL BOOKING intent:
-   - ትርጉም: ቁጥሩን ሙሉ ዋጋ መያዝ
-   - ቁጥር ብቻ ሲጽፍ = full booking
-   - action: book_full ወይም book_multiple type:"full"
-
-3. ቀይር/ተካ intent (cancel_and_rebook):
-   - ትርጉም: አንድ ቁጥር ሰርዞ ሌላ ቁጥር መያዝ
-   - ምልክቶች/ቃላት: ወደ, በ, change, from, to, replace, ቀይር, ቀይረው, ቀይርልኝ, swap, ትካው, ምትካ, argew, arg, mels, መልስ, cancel and add, sriz and yaz, ሰርዝና ያዝ, kutr X mels Y, X ትካ Y
-   - format: {"action":"cancel_and_rebook","cancel_number":X,"book_number":Y,"book_type":"full","name":"${bookingName}","reply":"እሺ ቀይረናል 🙏"}
-
-4. ስም ጠቅሶ ያዝ intent:
-   - ትርጉም: የሌላ ሰው ስም ጠቅሶ booking ማድረግ
-   - ቃላት: ያዝ, set, bel, ble, በል, hold, ብለህ, ብላ, ስም, name, yaz, blo, bleh
-   - format: {"action":"book_full","number":X,"name":"[ያ ስም]","reply":"እሺ [ስም] ብለህ ተይዟል 🙏"}
-
-5. ሰርዝ intent:
-   - ትርጉም: የያዘውን ቁጥር መሰረዝ
-   - ቃላት: ሰርዝ, cancel, remove, አልፈልግም, አውጣ, delete, sriz, sarez, argew, arg, alfelgm, አልፈልገውም, አታስቀምጥ
-   - format: {"action":"cancel","number":X,"reply":"እሺ ተሰርዟል 🙏"}
-
-6. ነፃ slot ጥያቄ intent:
-   - ትርጉም: ምን ቁጥሮች ነፃ እንደሆኑ መጠየቅ
-   - ቃላት: አለ?, ነፃ, free, yale, ale, ቁጥር አለ, available, yale, menfes, ክፍት
-   - format: {"action":"reply","reply":"✅ ነፃ slots: [ዝርዝር]"}
-
-7. NICKNAME intent:
-   - ትርጉም: ስም መቀየር ወይም መስጠት
-   - ቃላት: ለኔ...በል, ስሜ, my name, call me, nickname, sme, semé
-   - format: {"action":"save_nickname","nickname":"[ስም]","reply":"እሺ ተቀይሯል 🙏"}
-
-8. CHANGE TYPE intent:
-   - ትርጉም: ሙሉ → ግማሽ ወይም ግማሽ → ሙሉ መቀየር
-   - ቃላት: ሙሉ አድርግ, ግማሽ አድርግ, make full, make half, full yarg, half yarg
-   - format: {"action":"change_type","number":X,"new_type":"full/half","reply":"እሺ ተቀይሯል 🙏"}
-   
-=== IMPORTANT RULES ===
+=== RULES ===
 - የተያዘ slot → "ተቀድመሃል ቤተሰብ 🙏"
 - እራሱ ያዘ → "ይዥሃለሁ ቤተሰብ 🙏"
 - ክፍያ screenshot → "ተቀብዬአለሁ ✅ Admin ያረጋግጣል"
-- leading zero ያለው ቁጥር: "01"=1, "06"=6, "09"=9
 - nickname ካለ ሁሌ nickname ተጠቀም
+- leading zero: "01"=1, "06"=6
 
-JSON ብቻ:`;
-  const raw = await geminiCall(prompt, 250, 0.7);
+JSON ብቻ ምለስ:`;
+
+  const userPrompt = `ተጠቃሚ: ${userName} (ID:${userId})
+መልእክት: "${userMessage}"`;
+
+  const raw = await groqCall(systemPrompt, userPrompt, 250, 0.7);
   console.log("🧠 AI raw:", raw);
 
   try {
-    const clean = raw.replace(/\`\`\`(?:json)?/g, "").trim();
+    const clean = raw.replace(/```(?:json)?/g, "").trim();
     const match = clean.match(/\{.*\}/s);
     if (match) return JSON.parse(match[0]);
   } catch (e) {
@@ -674,7 +606,6 @@ async function updateLotteryMessage(data) {
   }
 }
 
-// /start_lottery
 bot.command("start_lottery", async (ctx) => {
   if (ctx.from.id !== ADMIN_TELEGRAM_ID) {
     await ctx.reply("❌ Admin ብቻ።");
@@ -689,7 +620,6 @@ bot.command("start_lottery", async (ctx) => {
   await ctx.reply("✅ ሎተሪ ጀምሯል!");
 });
 
-// /paid
 bot.command("paid", async (ctx) => {
   if (ctx.from.id !== ADMIN_TELEGRAM_ID) return;
   const args = ctx.match ? ctx.match.trim().split(/\s+/) : [];
@@ -717,7 +647,6 @@ bot.command("paid", async (ctx) => {
   }
 });
 
-// /rules
 bot.command("rules", async (ctx) => {
   if (ctx.from.id !== ADMIN_TELEGRAM_ID) return;
   const rules = await loadAdminRules();
@@ -729,14 +658,12 @@ bot.command("rules", async (ctx) => {
   }
 });
 
-// /clear
 bot.command("clear", async (ctx) => {
   if (ctx.from.id !== ADMIN_TELEGRAM_ID) return;
   await clearAdminChatHistory();
   await ctx.reply("🗑️ ታሪክ ተሰርዟል።");
 });
 
-// Text messages
 bot.on("message:text", async (ctx) => {
   const rawText  = ctx.message.text.trim();
   const userId   = ctx.from.id;
@@ -749,13 +676,13 @@ bot.on("message:text", async (ctx) => {
     console.log(`🔐 Admin: '${rawText}'`);
     await saveAdminChatMessage("user", rawText);
 
-    const response = await adminGeminiChat(rawText, data);
+    const response = await adminGroqChat(rawText, data);
     if (!response) {
-      await ctx.reply("❌ Gemini አልተናገረም። Quota ሊሆን ይችላል።");
+      await ctx.reply("❌ AI አልተናገረም። ቆይተህ ሞክር።");
       return;
     }
 
-    const { clean, newRules, deleteAll } = processAdminGeminiResponse(response);
+    const { clean, newRules, deleteAll } = processAdminResponse(response);
     if (deleteAll) await deleteAllAdminRules();
     for (const rule of newRules) await saveAdminRule(rule);
 
@@ -768,7 +695,7 @@ bot.on("message:text", async (ctx) => {
     return;
   }
 
-   // GROUP MODE
+  // GROUP MODE
   const data = await loadData();
   console.log(`📩 ${userName} (${userId}): '${rawText}'`);
   await saveUserChatMessage(userId, "user", rawText);
@@ -788,6 +715,7 @@ bot.on("message:text", async (ctx) => {
     await ctx.reply(reply);
     return;
   }
+
   const result = executeAction(actionData, userId, data);
 
   if (result.changed) {
@@ -822,15 +750,15 @@ function runServer() {
 // ==================== MAIN ====================
 
 async function main() {
-  if (!GEMINI_KEYS.length) {
-    console.error("❌ ምንም Gemini key አልተገኘም!");
+  if (!GROQ_API_KEY) {
+    console.error("❌ GROQ_API_KEY አልተገኘም!");
     process.exit(1);
   }
 
   await initDb();
   runServer();
 
-  console.log(`✅ ${GEMINI_KEYS.length} Gemini keys loaded`);
+  console.log("✅ Groq + Gemma2 9B loaded");
   console.log("✅ Bot እየሰራ ነው...");
 
   await bot.api.deleteWebhook({ drop_pending_updates: true });
