@@ -102,6 +102,19 @@ async function initDb() {
         updated_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
+    // NEW: pending bookings table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS pending_bookings (
+        id          SERIAL PRIMARY KEY,
+        user_id     BIGINT NOT NULL,
+        user_name   TEXT NOT NULL,
+        chat_id     BIGINT NOT NULL,
+        question    TEXT NOT NULL,
+        context     JSONB NOT NULL,
+        expires_at  TIMESTAMPTZ NOT NULL,
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
     console.log("✅ DB initialized");
   } catch (e) {
     console.error("❌ DB init error:", e);
@@ -175,6 +188,80 @@ async function resetSlots() {
   }
 }
 
+// ==================== PENDING BOOKINGS ====================
+
+async function savePending(userId, userName, chatId, question, context) {
+  try {
+    // expires in 1.5 minutes
+    await pool.query(
+      `INSERT INTO pending_bookings (user_id, user_name, chat_id, question, context, expires_at)
+       VALUES ($1, $2, $3, $4, $5::jsonb, NOW() + INTERVAL '90 seconds')
+       ON CONFLICT DO NOTHING`,
+      [userId, userName, chatId, question, JSON.stringify(context)]
+    );
+  } catch (e) {
+    console.error("❌ savePending error:", e);
+  }
+}
+
+async function getPending(userId) {
+  try {
+    const res = await pool.query(
+      `SELECT * FROM pending_bookings
+       WHERE user_id = $1 AND expires_at > NOW()
+       ORDER BY id DESC LIMIT 1`,
+      [userId]
+    );
+    return res.rows.length ? res.rows[0] : null;
+  } catch (e) {
+    console.error("❌ getPending error:", e);
+    return null;
+  }
+}
+
+async function deletePending(userId) {
+  try {
+    await pool.query("DELETE FROM pending_bookings WHERE user_id = $1", [userId]);
+  } catch (e) {
+    console.error("❌ deletePending error:", e);
+  }
+}
+
+async function getExpiredPendings() {
+  try {
+    const res = await pool.query(
+      `SELECT * FROM pending_bookings WHERE expires_at <= NOW()`
+    );
+    return res.rows;
+  } catch (e) {
+    return [];
+  }
+}
+
+async function deleteExpiredPendings() {
+  try {
+    await pool.query("DELETE FROM pending_bookings WHERE expires_at <= NOW()");
+  } catch (e) {
+    console.error("❌ deleteExpiredPendings error:", e);
+  }
+}
+
+// Check if a slot/number is pending by another user
+async function getNumberPendingByOther(number, userId) {
+  try {
+    const res = await pool.query(
+      `SELECT * FROM pending_bookings
+       WHERE user_id != $1
+         AND expires_at > NOW()
+         AND context->>'numbers' LIKE $2`,
+      [userId, `%${number}%`]
+    );
+    return res.rows.length ? res.rows[0] : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 // ==================== ADMIN RULES ====================
 
 async function loadAdminRules() {
@@ -190,7 +277,6 @@ async function loadAdminRules() {
 async function saveAdminRule(rule) {
   try {
     await pool.query("INSERT INTO admin_rules (rule) VALUES ($1)", [rule]);
-    console.log("✅ Rule saved:", rule);
   } catch (e) {
     console.error("❌ saveAdminRule error:", e);
   }
@@ -211,7 +297,6 @@ async function getUserNickname(userId) {
     );
     return res.rows.length ? res.rows[0].nickname : null;
   } catch (e) {
-    console.error("❌ getUserNickname error:", e);
     return null;
   }
 }
@@ -264,6 +349,19 @@ async function clearAdminChatHistory() {
     await pool.query("DELETE FROM admin_chat_history");
   } catch (e) {
     console.error("❌ clearAdminChatHistory error:", e);
+  }
+}
+
+async function loadUserChatHistory(userId, limit = 8) {
+  try {
+    const res = await pool.query(
+      `SELECT role, content FROM user_chat_history
+       WHERE user_id = $1 ORDER BY id DESC LIMIT $2`,
+      [userId, limit]
+    );
+    return res.rows.reverse().map(r => ({ role: r.role, content: r.content }));
+  } catch (e) {
+    return [];
   }
 }
 
@@ -353,6 +451,17 @@ function buildShortState(data) {
   return lines.join("\n");
 }
 
+// Get all slots owned by a user
+function getUserSlots(userId, data) {
+  const result = [];
+  for (const [slotId, slot] of Object.entries(data.slots)) {
+    if (slot.p1_id === userId || slot.p2_id === userId) {
+      result.push({ slotId, slot });
+    }
+  }
+  return result;
+}
+
 // ==================== ADMIN CHAT ====================
 
 async function adminGroqChat(userMessage, data) {
@@ -403,102 +512,121 @@ function processAdminResponse(response) {
   return { clean, newRules, deleteAll };
 }
 
-// ==================== GROUP AI BRAIN (Gemini prompt — Groq API) ====================
+// ==================== GROUP AI BRAIN ====================
 
 async function aiBrain(userMessage, userId, userName, data) {
   const fullState   = buildShortState(data);
   const adminRules  = await buildAdminRulesText();
   const savedNick   = await getUserNickname(userId);
   const bookingName = savedNick || userName;
+  const userHistory = await loadUserChatHistory(userId, 8);
+  const userSlots   = getUserSlots(userId, data);
 
-  const systemPrompt = `አንተ የሎተሪ booking bot ነህ። JSON ብቻ መልስ። ምንም explanation አትጨምር።
+  const historyText = userHistory.length
+    ? userHistory.map(m => `${m.role === "user" ? "User" : "Bot"}: ${m.content}`).join("\n")
+    : "ምንም ታሪክ የለም";
+
+  const userSlotsText = userSlots.length
+    ? userSlots.map(({ slot }) => {
+        const nums = slot.numbers;
+        return `${nums[0]}-${nums[nums.length-1]}(${slot.type === "half" ? "ግማሽ" : "ሙሉ"})`;
+      }).join(", ")
+    : "ምንም";
+
+  const systemPrompt = `አንተ የሎተሪ booking AI ነህ። JSON ብቻ መልስ። ምንም explanation አትጨምር።
 
 nickname: ${savedNick ? `"${savedNick}"` : "የለም"}
+የዚህ user slots: ${userSlotsText}
 ሁኔታ: ${fullState}
 ${adminRules}
 
-=== INTENT RULES (ምንም spelling፣ ቋንቋ፣ ወይም አጻጻፍ ቢጠቀም INTENT ተረዳ) ===
+የቅርብ ጊዜ ታሪክ (context):
+${historyText}
 
-አስፈላጊ: ሰዎች perfect አይጽፉም። የተሳሳተ spelling፣ mixed language፣ አጭር ቃላት ሁሉ ተረዳ።
+════════════════════════════════════
+ CORE BOOKING RULES
+════════════════════════════════════
 
-1. BOOKING intent — + ምልክት ያለው = ግማሽ፣ የሌለው = ሙሉ:
-   - ⚠️ ቁጥር ላይ "+" ምልክት ካለ = ግማሽ (half)
-   - ⚠️ ቁጥር ላይ "+" ምልክት ከሌለ = ሙሉ (full)
-   - ምሳሌ: "91+" = 91 ግማሽ → book_half_p1
-   - ምሳሌ: "96" = 96 ሙሉ → book_full
-   - ምሳሌ: "91+ 96" = 91 ግማሽ + 96 ሙሉ → book_multiple mixed
-   - ምሳሌ: "91+ 96+" = ሁለቱም ግማሽ → book_multiple half
-   - ምሳሌ: "91 96" = ሁለቱም ሙሉ → book_multiple full
+★ ቁጥር + "+" ምልክት = ግማሽ (half)
+★ ቁጥር ብቻ = ሙሉ (full)
 
-   አንድ ቁጥር ሙሉ: {"action":"book_full","number":X,"name":"${bookingName}","reply":"እሺ ሙሉ ተይዟል 🙏"}
-   አንድ ቁጥር ግማሽ: {"action":"book_half_p1","number":X,"name":"${bookingName}","reply":"እሺ ግማሽ ተይዟል 🙏"}
-   ብዙ ቁጥሮች: {"action":"book_multiple","bookings":[{"number":91,"type":"half"},{"number":96,"type":"full"}],"name":"${bookingName}","reply":"እሺ ተይዟል 🙏"}
+── CASE 1: ነፃ slot ──
+"21+" → book_half_p1 (ግማሽ ያዝ)
+"21"  → book_full (ሙሉ ያዝ)
 
-   ሌሎች የግማሽ ቃላት (ሁሉም ቁጥሮች ግማሽ ማለት): half, gmash, gemash, ግማሽ, 1/2, haf, gmas, በግማሽ, ሃፍ
+── CASE 2: የራሱ slot ዳግም ጠራ (SELF RE-BOOK) ──
+⚠️ user ቀደም ሲል ያዘው slot ቁጥር ዳግም ጠራ:
+- "21+" ያዘ ነበር → "21" ወይም "21+" ዳግም ጻፈ
+- ምን ማለቱ ነው: "ሙሉ አርግልኝ"
+- → change_type full
+- reply: "ሙሉ ሆኗል 🙏"
 
-3. ቀይር/ተካ intent (cancel_and_rebook):
-   - ትርጉም: አንድ ቁጥር ሰርዞ ሌላ ቁጥር መያዝ
-   - ምልክቶች/ቃላት: ወደ, በ, change, from, to, replace, ቀይር, ቀይረው, ቀይርልኝ, swap, ትካው, ምትካ, argew, arg, mels, መልስ, cancel and add, sriz and yaz, ሰርዝና ያዝ, kutr X mels Y, X ትካ Y
-   - format: {"action":"cancel_and_rebook","cancel_number":X,"book_number":Y,"book_type":"full","name":"${bookingName}","reply":"እሺ ቀይረናል 🙏"}
+── CASE 3: ሌላ user ግማሽ slot ጠራ (P2 JOIN) ──
+- slot ግማሽ ነው (p1 አለ)
+- ሌላ user ያ ቁጥር ጠራ ("21" ወይም "21+")
+- → book_half_p2
+- reply: "ሙሉ ሆኗል! [p1_name]+[this_user_name] 🙏"
 
-4. ስም ጠቅሶ ያዝ intent:
-   - ትርጉም: የሌላ ሰው ስም ጠቅሶ booking ማድረግ
-   - ቃላት: ያዝ, set, bel, ble, በል, hold, ብለህ, ብላ, ስም, name, yaz, blo, bleh
-   - format: {"action":"book_full","number":X,"name":"[ያ ስም]","reply":"እሺ [ስም] ብለህ ተይዟል 🙏"}
+── CASE 4: አሻሚ input ──
+User ብዙ ቁጥሮች ጻፈ እና አንዳንዱ ግልጽ አይደለም:
+ምሳሌ: "21+ 31 36 በጅ ሙሉ" — 31 ሙሉ? ወይስ 36 ብቻ?
+→ action: "ask_clarify"
+→ ጥያቄ ጠይቅ: "36 ብቻ ሙሉ ልያዝ? ወይስ 31ም ሙሉ?"
+→ context ውስጥ ግልጽ የሆኑትን አስቀምጥ
+format: {"action":"ask_clarify","reply":"[ጥያቄ]","confirmed_bookings":[{"number":21,"type":"half"}],"unclear_numbers":[31,36]}
 
-5. ሰርዝ intent:
-   - ትርጉም: የያዘውን ቁጥር መሰረዝ
-   - ቃላት: ሰርዝ, cancel, remove, አልፈልግም, አውጣ, delete, sriz, sarez, argew, arg, alfelgm, አልፈልገውም, አታስቀምጥ
-   - format: {"action":"cancel","number":X,"reply":"እሺ ተሰርዟል 🙏"}
+── CASE 5: ከ ask_clarify በኋላ user መለሰ (CONTINUATION) ──
+ታሪክ ውስጥ "ask_clarify" ካለ እና user መለሰ:
+- "ሁለቱም ሙሉ" / "ሁለቱንም" → confirmed_bookings ሁሉ + unclear ሁሉ ሙሉ ያዝ
+- "36 ብቻ" / "36 ብቻ ሙሉ" → 36 ብቻ ያዝ
+- "ተው" / "cancel" / "አትያዝ" → ምንም አትያዝ
+→ action: "book_multiple" ወይም "reply"
 
-6. ነፃ slot ጥያቄ intent:
-   - ትርጉም: ምን ቁጥሮች ነፃ እንደሆኑ መጠየቅ
-   - ቃላት: አለ?, ነፃ, free, yale, ale, ቁጥር አለ, available, menfes, ክፍት
-   - format: {"action":"reply","reply":"✅ ነፃ slots: [ዝርዝር]"}
+── CASE 6: "ተው" ሲል (CANCEL PENDING) ──
+User "ተው"/"cancel"/"አትያዝ" ካለ → pending cancel
+format: {"action":"cancel_pending","reply":"እሺ ምንም አልያዝኩም 🙏"}
 
-7. NICKNAME intent:
-   - ትርጉም: ስም መቀየር ወይም መስጠት
-   - ቃላት: ለኔ...በል, ስሜ, my name, call me, nickname, sme, semé
-   - format: {"action":"save_nickname","nickname":"[ስም]","reply":"እሺ ተቀይሯል 🙏"}
+════════════════════════════════════
+ OTHER INTENTS
+════════════════════════════════════
 
-8. CHANGE TYPE intent — ትልቅ ትኩረት ያስፈልጋል:
-   - ትርጉም: ቀድሞ የያዘ ቁጥር ከግማሽ → ሙሉ ወይም ሙሉ → ግማሽ መቀየር
-   - ቃላት: mulu, ሙሉ, full, mulu yarg, full adrg, ሙሉ አድርግ, ሙሉ አርግ, gmash, ግማሽ, half, gmash adrg, ግማሽ አድርግ, half yarg
-   - ⚠️ BOOKING አይደለም — TYPE CHANGE ነው!
-   - ምሳሌ: "91+ mulu አርግ" = 91 ያዘ ነበር (ግማሽ) → ሙሉ ቀይር → change_type
-   - ምሳሌ: "91 mulu" = 91 ያዘ ነበር → ሙሉ ቀይር → change_type
+3. ቀይር/ተካ (cancel_and_rebook):
+{"action":"cancel_and_rebook","cancel_number":X,"book_number":Y,"book_type":"full","name":"${bookingName}","reply":"እሺ ቀይረናል 🙏"}
 
-   CASE A — አንድ ቁጥር ብቻ (ቀጥታ ቀይር):
-   {"action":"change_type","number":X,"new_type":"full","reply":"እሺ ሙሉ ሆነ 🙏"}
+4. ስም ጠቅሶ ያዝ:
+{"action":"book_full","number":X,"name":"[ያ ስም]","reply":"እሺ [ስም] ብለህ ተይዟል 🙏"}
 
-   CASE B — ብዙ ቁጥሮች specific (ሁለቱንም ቀይር):
-   - "31 21 mulu አርግ" → ሁለቱንም change_type
-   {"action":"change_type_multiple","numbers":[31,21],"new_type":"full","reply":"እሺ ሁለቱም ሙሉ ሆኑ 🙏"}
+5. ሰርዝ:
+{"action":"cancel","number":X,"reply":"እሺ ተሰርዟል 🙏"}
 
-   CASE C — "አርጋቸው" / "ሁሉንም" / "ሁሉም" (user ያዛቸውን ሁሉ ቀይር):
-   - "ሙሉ አርጋቸው", "ሁሉንም full አድርግ", "ሁሉም mulu yarg"
-   - user ያዛቸውን slots ሁሉ ከ state ውስጥ ፈልግ → ሁሉንም ቀይር
-   {"action":"change_type_multiple","numbers":[X,Y,Z],"new_type":"full","reply":"እሺ ሁሉም ሙሉ ሆኑ 🙏"}
+6. ነፃ slot ጥያቄ:
+{"action":"reply","reply":"✅ ነፃ slots: [ዝርዝር]"}
 
-   CASE D — አሻሚ (ቁጥር አልጠቀሰም፣ ብዙ slots አለው):
-   - user ብዙ slots ካለው እና ቁጥር ሳይጠቅስ "mulu አርግ" ካለ → ጠይቅ
-   {"action":"ask","reply":"የቱን ቁጥር ሙሉ ላድርግ? ያዝካቸው ቁጥሮች: [ዝርዝር]"}
+7. NICKNAME:
+{"action":"save_nickname","nickname":"[ስም]","reply":"እሺ ተቀይሯል 🙏"}
 
-=== IMPORTANT RULES ===
-- የተያዘ slot → {"action":"reply","reply":"ተቀድመሃል ቤተሰብ 🙏"}
-- እራሱ ያዘ → {"action":"reply","reply":"ይዥሃለሁ ቤተሰብ 🙏"}
+8. CHANGE TYPE:
+አንድ: {"action":"change_type","number":X,"new_type":"full","reply":"ሙሉ ሆኗል 🙏"}
+ብዙ: {"action":"change_type_multiple","numbers":[X,Y],"new_type":"full","reply":"ሁሉም ሙሉ ሆኑ 🙏"}
+አሻሚ: {"action":"ask","reply":"የቱን ቁጥር ሙሉ ላድርግ?"}
+
+════════════════════════════════════
+ IMPORTANT RULES
+════════════════════════════════════
+- የተያዘ slot (ሌላ ሰው) → {"action":"reply","reply":"ተቀድመሃል ቤተሰብ 🙏"}
+- እራሱ ያዘ → self re-book logic ተጠቀም
 - ክፍያ screenshot → {"action":"reply","reply":"ተቀብዬአለሁ ✅ Admin ያረጋግጣል"}
-- leading zero: "01"=1, "06"=6, "09"=9
+- leading zero: "01"=1
 - nickname ካለ ሁሌ nickname ተጠቀም
-- reply field ሁሌ ሙሉ አማርኛ መልስ ይኑረው — ባዶ አይሁን
-- "mulu/full + ቁጥር" = CHANGE TYPE እንጂ NEW BOOKING አይደለም!
+- reply field ሁሌ ሙሉ አማርኛ መልስ — ባዶ አይሁን
+- ታሪክ አንብብ! context ተረዳ! ቀዳሚ ጥያቄ ካለ continuation ተከተል
 
 JSON ብቻ ምለስ:`;
 
   const userPrompt = `ተጠቃሚ: ${userName} (ID:${userId})
 መልእክት: "${userMessage}"`;
 
-  const raw = await groqCall(systemPrompt, userPrompt, 250, 0.7);
+  const raw = await groqCall(systemPrompt, userPrompt, 350, 0.5);
   console.log("🧠 AI raw:", raw);
 
   try {
@@ -509,6 +637,75 @@ JSON ብቻ ምለስ:`;
     console.error("❌ AI parse error:", e);
   }
   return { action: "reply", reply: "❌ ጊዜያዊ ችግር አለ። ቆይተህ ሞክር።" };
+}
+
+// ==================== PENDING TIMEOUT RESOLVER ====================
+
+async function resolvePendingWithBestGuess(pending, bot) {
+  try {
+    const data = await loadData();
+    const context = pending.context;
+    const userId = pending.user_id;
+    const userName = pending.user_name;
+    const chatId = pending.chat_id;
+
+    // Best guess: book confirmed_bookings + pick first unclear as full
+    const bookings = [];
+
+    if (context.confirmed_bookings && context.confirmed_bookings.length) {
+      for (const b of context.confirmed_bookings) {
+        bookings.push(b);
+      }
+    }
+
+    if (context.unclear_numbers && context.unclear_numbers.length) {
+      // Best guess: take all unclear as full
+      for (const num of context.unclear_numbers) {
+        bookings.push({ number: num, type: "full" });
+      }
+    }
+
+    let changed = false;
+    const savedNick = await getUserNickname(userId);
+    const bookingName = savedNick || userName;
+
+    for (const b of bookings) {
+      const [slotId, slot] = getSlotByNumber(b.number, data);
+      if (slotId && !slot.type) {
+        Object.assign(data.slots[slotId], {
+          type: b.type === "half" ? "half" : "full",
+          p1_id: userId, p1_name: bookingName, p1_paid: false,
+          p2_id: null, p2_name: null, p2_paid: false,
+        });
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      await saveData(data);
+      await updateLotteryMessage(data);
+      const nums = bookings.map(b => b.number).join(", ");
+      await bot.api.sendMessage(chatId,
+        `⏰ ${bookingName}፣ ምላሽ ስላልሰጠህ/ሽ በግምት ይዤልሃለሁ (${nums}) 🙏`
+      );
+
+      // Check if any half slots available to offer
+      const userSlots = getUserSlots(userId, data);
+      for (const { slot } of userSlots) {
+        if (slot.type === "half" && !slot.p2_id) {
+          const nums2 = slot.numbers[0];
+          await bot.api.sendMessage(chatId,
+            `ቤተሰብ ${nums2} በግማሽ ነው፣ ሌላ ሰው ቢፈልግ ልቀላቀል ይችላል 🙏`
+          );
+          break;
+        }
+      }
+    }
+
+    await deletePending(userId);
+  } catch (e) {
+    console.error("❌ resolvePending error:", e);
+  }
 }
 
 // ==================== EXECUTOR ====================
@@ -748,6 +945,7 @@ bot.on("message:text", async (ctx) => {
   const userId   = ctx.from.id;
   const userName = ctx.from.first_name || "ተጠቃሚ";
   const chatType = ctx.chat.type;
+  const chatId   = ctx.chat.id;
 
   // ADMIN PRIVATE
   if (userId === ADMIN_TELEGRAM_ID && chatType === "private") {
@@ -779,30 +977,142 @@ bot.on("message:text", async (ctx) => {
   console.log(`📩 ${userName} (${userId}): '${rawText}'`);
   await saveUserChatMessage(userId, "user", rawText);
 
+  // ── Check if user has pending and this might be a reply ──
+  const pending = await getPending(userId);
+
+  // ── Check timeout for ALL expired pendings ──
+  const expired = await getExpiredPendings();
+  for (const exp of expired) {
+    if (exp.user_id !== userId) {
+      await resolvePendingWithBestGuess(exp, bot);
+    }
+  }
+
   const actionData = await aiBrain(rawText, userId, userName, data);
   console.log("🧠 Action:", actionData);
 
+  // ── Handle cancel_pending ──
+  if (actionData.action === "cancel_pending") {
+    await deletePending(userId);
+    await ctx.reply(actionData.reply || "እሺ ምንም አልያዝኩም 🙏");
+    return;
+  }
+
+  // ── Handle save_nickname ──
   if (actionData.action === "save_nickname" && actionData.nickname) {
     await saveUserNickname(userId, actionData.nickname);
     await ctx.reply(actionData.reply || "✅ ስምህ ተቀይሯል!");
     return;
   }
 
+  // ── Handle ask_clarify (ambiguous) ──
+  if (actionData.action === "ask_clarify") {
+    // Save pending context
+    const context = {
+      confirmed_bookings: actionData.confirmed_bookings || [],
+      unclear_numbers: actionData.unclear_numbers || [],
+      numbers: (actionData.unclear_numbers || []).join(","),
+    };
+
+    // Check if any unclear number is pending by someone else
+    let sniped = false;
+    for (const num of (actionData.unclear_numbers || [])) {
+      const otherPending = await getNumberPendingByOther(num, userId);
+      if (otherPending) {
+        await ctx.reply(`⚡ ቁጥር ${num} ሌላ ሰው እያጣራ ነው። አጣርቼ ይዝልሃለሁ 🙏`);
+        sniped = true;
+      }
+    }
+
+    await savePending(userId, userName, chatId, actionData.reply, context);
+    await saveUserChatMessage(userId, "assistant", actionData.reply);
+    await ctx.reply(actionData.reply);
+
+    // Schedule timeout resolver
+    setTimeout(async () => {
+      const stillPending = await getPending(userId);
+      if (stillPending) {
+        await resolvePendingWithBestGuess(stillPending, bot);
+      }
+    }, 90 * 1000); // 1:30 min
+
+    return;
+  }
+
+  // ── Handle ask ──
   if (actionData.action === "ask" || actionData.action === "reply") {
     const reply = actionData.reply || "❓";
     await saveUserChatMessage(userId, "assistant", reply);
     await ctx.reply(reply);
+
+    // If had pending, resolve it
+    if (pending) await deletePending(userId);
     return;
   }
+
+  // ── Execute booking action ──
+  // First check if a number being booked is pending by current user (priority claim)
+  const bookedNumber = actionData.number ||
+    (actionData.bookings && actionData.bookings[0]?.number);
+
+  if (bookedNumber) {
+    const otherPending = await getNumberPendingByOther(bookedNumber, userId);
+    if (otherPending) {
+      // Snipe protection: notify the other user's pending will be resolved
+      await ctx.reply(`⚡ ቁጥር ${bookedNumber} ሌላ ሰው እያጣራ ነው። ተቀድመሃል — አጣርቼ ይዝልሃለሁ 🙏`);
+      // Save as pending for this user too
+      const context = {
+        confirmed_bookings: [{ number: bookedNumber, type: actionData.action === "book_half_p1" ? "half" : "full" }],
+        unclear_numbers: [],
+        numbers: String(bookedNumber),
+      };
+      await savePending(userId, userName, chatId, `ቁጥር ${bookedNumber} ልያዝ`, context);
+
+      setTimeout(async () => {
+        const stillPending = await getPending(userId);
+        if (stillPending) {
+          await resolvePendingWithBestGuess(stillPending, bot);
+        }
+      }, 90 * 1000);
+      return;
+    }
+  }
+
+  // Clear pending if user gave a direct answer
+  if (pending) await deletePending(userId);
 
   const result = executeAction(actionData, userId, data);
 
   if (result.changed) {
     await saveData(result.data);
     await updateLotteryMessage(result.data);
+
     const filled = Object.values(result.data.slots).filter(isSlotFullBooked).length;
     if (filled === 20) {
       await ctx.reply("🎉 ሁሉም slots ተሞልቷል! ዕጣ ቅርብ ነው! 🎰");
+    }
+
+    // After booking: check if any of user's new slots are half and offer p2
+    const userSlots = getUserSlots(userId, result.data);
+    for (const { slot } of userSlots) {
+      if (slot.type === "half" && !slot.p2_id) {
+        const firstNum = slot.numbers[0];
+        // Only notify if this was a new booking
+        const wasJustBooked = result.data.slots[
+          Object.keys(result.data.slots).find(k =>
+            result.data.slots[k].numbers[0] === firstNum
+          )
+        ];
+        if (wasJustBooked) {
+          // Small delay then notify
+          setTimeout(async () => {
+            await bot.api.sendMessage(chatId,
+              `ቤተሰብ ${firstNum} ግማሽ ነው — ሌላ ሰው ቢቀላቀል ቦታ አለ 🙏`
+            );
+          }, 1500);
+          break;
+        }
+      }
     }
   }
 
