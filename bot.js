@@ -15,7 +15,7 @@ const groq = new Groq({ apiKey: GROQ_API_KEY });
 async function groqCall(systemPrompt, userPrompt, maxTokens = 300, temperature = 0.1) {
   try {
     const completion = await groq.chat.completions.create({
-      model: "gemma2-9b-it",
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
       max_tokens: maxTokens,
       temperature,
       messages: [
