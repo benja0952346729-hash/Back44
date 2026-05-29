@@ -728,7 +728,8 @@ bot.on("message:text", async (ctx) => {
   }
 
   await saveUserChatMessage(userId, "assistant", result.reply);
-  await ctx.reply(result.reply);
+  await ctx.reply(result.reply || "✅ ተይዟል!");
+  
 });
 
 bot.catch((err) => {
