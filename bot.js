@@ -190,6 +190,7 @@ async function loadAdminRules() {
 async function saveAdminRule(rule) {
   try {
     await pool.query("INSERT INTO admin_rules (rule) VALUES ($1)", [rule]);
+    console.log("✅ Rule saved:", rule);
   } catch (e) {
     console.error("❌ saveAdminRule error:", e);
   }
@@ -210,6 +211,7 @@ async function getUserNickname(userId) {
     );
     return res.rows.length ? res.rows[0].nickname : null;
   } catch (e) {
+    console.error("❌ getUserNickname error:", e);
     return null;
   }
 }
@@ -401,13 +403,13 @@ function processAdminResponse(response) {
   return { clean, newRules, deleteAll };
 }
 
-// ==================== GROUP AI BRAIN ====================
+// ==================== GROUP AI BRAIN (Gemini prompt — Groq API) ====================
 
 async function aiBrain(userMessage, userId, userName, data) {
-  const fullState    = buildShortState(data);
-  const adminRules   = await buildAdminRulesText();
-  const savedNick    = await getUserNickname(userId);
-  const bookingName  = savedNick || userName;
+  const fullState   = buildShortState(data);
+  const adminRules  = await buildAdminRulesText();
+  const savedNick   = await getUserNickname(userId);
+  const bookingName = savedNick || userName;
 
   const systemPrompt = `አንተ የሎተሪ booking bot ነህ። JSON ብቻ መልስ። ምንም explanation አትጨምር።
 
@@ -415,24 +417,57 @@ nickname: ${savedNick ? `"${savedNick}"` : "የለም"}
 ሁኔታ: ${fullState}
 ${adminRules}
 
-=== INTENT RULES ===
-ማስታወሻ: User አማርኛ፣ Latin (transliteration)፣ ወይም mixed ሊጽፍ ይችላል። ሁሉንም ተረዳ።
+=== INTENT RULES (ምንም spelling፣ ቋንቋ፣ ወይም አጻጻፍ ቢጠቀም INTENT ተረዳ) ===
 
-1. HALF BOOKING: +, half, gmash, gemash, ግማሽ, 1/2, haf → book_half_p1
-2. FULL BOOKING: ቁጥር ብቻ → book_full
-3. ቀይር/ተካ: ወደ, change, ቀይር, swap → cancel_and_rebook
-4. ስም ጠቅሶ ያዝ: ያዝ, yaz, hold, ብለህ → book_full with that name
-5. ሰርዝ: ሰርዝ, cancel, sriz, alfelgm → cancel
-6. ነፃ slot: አለ?, free, yale, ክፍት → reply with free slots
-7. NICKNAME: ስሜ, call me, nickname → save_nickname
-8. CHANGE TYPE: ሙሉ አድርግ, ግማሽ አድርግ → change_type
+አስፈላጊ: ሰዎች perfect አይጽፉም። የተሳሳተ spelling፣ mixed language፣ አጭር ቃላት ሁሉ ተረዳ።
 
-=== RULES ===
-- የተያዘ slot → "ተቀድመሃል ቤተሰብ 🙏"
-- እራሱ ያዘ → "ይዥሃለሁ ቤተሰብ 🙏"
-- ክፍያ screenshot → "ተቀብዬአለሁ ✅ Admin ያረጋግጣል"
+1. HALF BOOKING intent:
+   - ትርጉም: ቁጥሩን በግማሽ ዋጋ መያዝ
+   - ምልክቶች/ቃላት: +, half, gmash, gemash, ግማሽ, 1/2, haf, gmas, በግማሽ, ፍርድ, ሃፍ
+   - action: book_half_p1 (single) ወይም book_multiple type:"half"
+
+2. FULL BOOKING intent:
+   - ትርጉም: ቁጥሩን ሙሉ ዋጋ መያዝ
+   - ቁጥር ብቻ ሲጽፍ = full booking
+   - action: book_full ወይም book_multiple type:"full"
+
+3. ቀይር/ተካ intent (cancel_and_rebook):
+   - ትርጉም: አንድ ቁጥር ሰርዞ ሌላ ቁጥር መያዝ
+   - ምልክቶች/ቃላት: ወደ, በ, change, from, to, replace, ቀይር, ቀይረው, ቀይርልኝ, swap, ትካው, ምትካ, argew, arg, mels, መልስ, cancel and add, sriz and yaz, ሰርዝና ያዝ, kutr X mels Y, X ትካ Y
+   - format: {"action":"cancel_and_rebook","cancel_number":X,"book_number":Y,"book_type":"full","name":"${bookingName}","reply":"እሺ ቀይረናል 🙏"}
+
+4. ስም ጠቅሶ ያዝ intent:
+   - ትርጉም: የሌላ ሰው ስም ጠቅሶ booking ማድረግ
+   - ቃላት: ያዝ, set, bel, ble, በል, hold, ብለህ, ብላ, ስም, name, yaz, blo, bleh
+   - format: {"action":"book_full","number":X,"name":"[ያ ስም]","reply":"እሺ [ስም] ብለህ ተይዟል 🙏"}
+
+5. ሰርዝ intent:
+   - ትርጉም: የያዘውን ቁጥር መሰረዝ
+   - ቃላት: ሰርዝ, cancel, remove, አልፈልግም, አውጣ, delete, sriz, sarez, argew, arg, alfelgm, አልፈልገውም, አታስቀምጥ
+   - format: {"action":"cancel","number":X,"reply":"እሺ ተሰርዟል 🙏"}
+
+6. ነፃ slot ጥያቄ intent:
+   - ትርጉም: ምን ቁጥሮች ነፃ እንደሆኑ መጠየቅ
+   - ቃላት: አለ?, ነፃ, free, yale, ale, ቁጥር አለ, available, yale, menfes, ክፍት
+   - format: {"action":"reply","reply":"✅ ነፃ slots: [ዝርዝር]"}
+
+7. NICKNAME intent:
+   - ትርጉም: ስም መቀየር ወይም መስጠት
+   - ቃላት: ለኔ...በል, ስሜ, my name, call me, nickname, sme, semé
+   - format: {"action":"save_nickname","nickname":"[ስም]","reply":"እሺ ተቀይሯል 🙏"}
+
+8. CHANGE TYPE intent:
+   - ትርጉም: ሙሉ → ግማሽ ወይም ግማሽ → ሙሉ መቀየር
+   - ቃላት: ሙሉ አድርግ, ግማሽ አድርግ, make full, make half, full yarg, half yarg
+   - format: {"action":"change_type","number":X,"new_type":"full/half","reply":"እሺ ተቀይሯል 🙏"}
+
+=== IMPORTANT RULES ===
+- የተያዘ slot → {"action":"reply","reply":"ተቀድመሃል ቤተሰብ 🙏"}
+- እራሱ ያዘ → {"action":"reply","reply":"ይዥሃለሁ ቤተሰብ 🙏"}
+- ክፍያ screenshot → {"action":"reply","reply":"ተቀብዬአለሁ ✅ Admin ያረጋግጣል"}
+- leading zero: "01"=1, "06"=6, "09"=9
 - nickname ካለ ሁሌ nickname ተጠቀም
-- leading zero: "01"=1, "06"=6
+- reply field ሁሌ ሙሉ አማርኛ መልስ ይኑረው — ባዶ አይሁን
 
 JSON ብቻ ምለስ:`;
 
@@ -691,7 +726,7 @@ bot.on("message:text", async (ctx) => {
     if (deleteAll)       finalReply += "\n🗑️ ሁሉም ህጎች ተሰርዘዋል።";
 
     await saveAdminChatMessage("assistant", finalReply);
-    await ctx.reply(finalReply);
+    await ctx.reply(finalReply || "✅");
     return;
   }
 
@@ -729,7 +764,6 @@ bot.on("message:text", async (ctx) => {
 
   await saveUserChatMessage(userId, "assistant", result.reply);
   await ctx.reply(result.reply || "✅ ተይዟል!");
-  
 });
 
 bot.catch((err) => {
@@ -759,7 +793,7 @@ async function main() {
   await initDb();
   runServer();
 
-  console.log("✅ Groq + Gemma2 9B loaded");
+  console.log("✅ Groq loaded");
   console.log("✅ Bot እየሰራ ነው...");
 
   await bot.api.deleteWebhook({ drop_pending_updates: true });
