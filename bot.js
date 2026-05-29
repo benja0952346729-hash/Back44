@@ -89,7 +89,13 @@ async function initDb() {
       SELECT $1::jsonb, NULL, NULL
       WHERE NOT EXISTS (SELECT 1 FROM lottery_state)
     `, [JSON.stringify(buildEmptySlots())]);
-
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_nicknames (
+        user_id    BIGINT PRIMARY KEY,
+        nickname   TEXT NOT NULL,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
     console.log("✅ DB initialized");
   } catch (e) {
     console.error("❌ DB init error:", e);
@@ -192,7 +198,30 @@ async function deleteAllAdminRules() {
     console.error("❌ deleteAllAdminRules error:", e);
   }
 }
+async function getUserNickname(userId) {
+  try {
+    const res = await pool.query(
+      "SELECT nickname FROM user_nicknames WHERE user_id = $1", [userId]
+    );
+    return res.rows.length ? res.rows[0].nickname : null;
+  } catch (e) {
+    console.error("❌ getUserNickname error:", e);
+    return null;
+  }
+}
 
+async function saveUserNickname(userId, nickname) {
+  try {
+    await pool.query(
+      `INSERT INTO user_nicknames (user_id, nickname)
+       VALUES ($1, $2)
+       ON CONFLICT (user_id) DO UPDATE SET nickname = $2, updated_at = NOW()`,
+      [userId, nickname]
+    );
+  } catch (e) {
+    console.error("❌ saveUserNickname error:", e);
+  }
+}
 async function buildAdminRulesText() {
   const rules = await loadAdminRules();
   if (!rules.length) return "";
@@ -402,10 +431,14 @@ function processAdminGeminiResponse(response) {
 // ==================== GROUP AI BRAIN ====================
 
 async function aiBrain(userMessage, userId, userName, data) {
-  const fullState  = buildShortState(data);
-  const adminRules = await buildAdminRulesText();
+  const fullState    = buildShortState(data);
+  const adminRules   = await buildAdminRulesText();
+  const savedNick    = await getUserNickname(userId);
+  const displayName  = savedNick || userName;
 
   const prompt = `የሎተሪ bot ነህ። JSON ብቻ መልስ።
+
+nickname: ${savedNick ? `"${savedNick}"` : "የለም"}
 
 ሁኔታ: ${fullState}
 ${adminRules}
@@ -423,7 +456,16 @@ ${adminRules}
 ምሳሌዎች:
 "56" → {"action":"book_full","number":56,"name":"${userName}","reply":"እሺ ገቢ 🙏"}
 "81 86" → {"action":"book_multiple","bookings":[{"number":81,"type":"full"},{"number":86,"type":"full"}],"name":"${userName}","reply":"እሺ ገቢ 🙏"}
-"11+ 21 begmash 23" → {"action":"book_multiple","bookings":[{"number":11,"type":"half"},{"number":21,"type":"half"},{"number":23,"type":"full"}],"name":"${userName}","reply":"እሺ ገቢ 🙏"}
+"21 ከ 31 ቀይረው" → {"action":"cancel_and_rebook","cancel_number":21,"book_number":31,"book_type":"full","name":"${displayName}","reply":"እሺ ቀይረናል 🙏"}
+"51 ሰርዘው እና 35 ጨምር" → {"action":"cancel_and_rebook","cancel_number":51,"book_number":35,"book_type":"full","name":"${displayName}","reply":"እሺ ቀይረናል 🙏"}
+"21 አላልኩም 51 ነው" → {"action":"cancel_and_rebook","cancel_number":21,"book_number":51,"book_type":"full","name":"${displayName}","reply":"እሺ ቀይረናል 🙏"}
+"21 ሰርዘው" → {"action":"cancel","number":21,"reply":"እሺ ተሰርዟል 🙏"}
+"አልፈልግም 21" → {"action":"cancel","number":21,"reply":"እሺ ተሰርዟል 🙏"}
+"51 ሙሉ አድርገው" → {"action":"change_type","number":51,"new_type":"full","reply":"እሺ ሙሉ ተደርጓል 🙏"}
+"51 ግማሽ አድርገው" → {"action":"change_type","number":51,"new_type":"half","reply":"እሺ ግማሽ ተደርጓል 🙏"}
+"56 አበበ ብለህ ያዝ" → {"action":"book_full","number":56,"name":"አበበ","reply":"እሺ አበበ ብለህ ተይዟል 🙏"}
+"ለኔ አበበ በል" → {"action":"save_nickname","nickname":"አበበ","reply":"እሺ ከአሁን በኋላ አበበ ብዬ እጠራሃለሁ 🙏"}
+"ስሜ ቀይር አበበ" → {"action":"save_nickname","nickname":"አበበ","reply":"እሺ ስምህ ተቀይሯል 🙏"},"bookings":[{"number":11,"type":"half"},{"number":21,"type":"half"},{"number":23,"type":"full"}],"name":"${userName}","reply":"እሺ ገቢ 🙏"}
 "ቁጥር አለ?" → {"action":"reply","reply":"✅ ነፃ slots: [ዝርዝር]"}
 
 JSON ብቻ:`;
@@ -556,6 +598,22 @@ function executeAction(actionData, userId, data) {
       }
       changed = true;
     }
+  } else if (action === "change_type" && number) {
+    const [slotId, slot] = getSlotByNumber(number, data);
+    if (slotId && slot.type) {
+      if (actionData.new_type === "full") {
+        data.slots[slotId].type = "full";
+        data.slots[slotId].p2_id = null;
+        data.slots[slotId].p2_name = null;
+        data.slots[slotId].p2_paid = false;
+      } else if (actionData.new_type === "half") {
+        data.slots[slotId].type = "half";
+        data.slots[slotId].p2_id = null;
+        data.slots[slotId].p2_name = null;
+        data.slots[slotId].p2_paid = false;
+      }
+      changed = true;
+    }
   }
 
   return { data, reply, changed };
@@ -680,7 +738,12 @@ bot.on("message:text", async (ctx) => {
 
   const actionData = await aiBrain(rawText, userId, userName, data);
   console.log("🧠 Action:", actionData);
-
+// nickname save
+  if (actionData.action === "save_nickname" && actionData.nickname) {
+    await saveUserNickname(userId, actionData.nickname);
+    await ctx.reply(actionData.reply || "✅ ስምህ ተቀይሯል!");
+    return;
+  }
   if (actionData.action === "ask") {
     const reply = actionData.reply || "❓";
     await saveUserChatMessage(userId, "assistant", reply);
