@@ -282,7 +282,7 @@ function isSlotFullBooked(slot) {
 
 function getSlotByNumber(number, data) {
   for (const [slotId, slot] of Object.entries(data.slots)) {
-    if (slot.numbers.includes(number)) return [slotId, slot];
+    if (slot.numbers.includes(Number(number))) return [slotId, slot];
   }
   return [null, null];
 }
@@ -436,40 +436,54 @@ async function aiBrain(userMessage, userId, userName, data) {
   const savedNick    = await getUserNickname(userId);
   const displayName  = savedNick || userName;
 
-  const prompt = `የሎተሪ bot ነህ። JSON ብቻ መልስ።
+ const bookingName = savedNick || userName;
+
+  const prompt = `አንተ የሎተሪ booking bot ነህ። JSON ብቻ መልስ። ምንም explanation አትጨምር።
 
 nickname: ${savedNick ? `"${savedNick}"` : "የለም"}
-
 ሁኔታ: ${fullState}
 ${adminRules}
 ተጠቃሚ: ${userName} (ID:${userId})
 መልእክት: "${userMessage}"
 
-ህጎች:
-- ቁጥሮች ሲጽፍ → book (1 ቁጥር=book_full/half, 2+=book_multiple)
-- "ቁጥር አለ?"/"kutr ale?"/"ነፃ አለ?" → ነፃ slots ዝርዝር reply ውስጥ ስጥ
-- የተያዘ → "ተቀድመሃል ቤተሰብ 🙏"
-- እራሱ ያዘ → "ይዥሄልሃለው ቤተሰብ 🙏"
-- ክፍያ ሲጠይቅ → የጠቀሰውን bank ብቻ
-- ክፍያ screenshot → "ተቀብዬአለሁ ✅ Admin ያረጋግጣል"
+=== INTENT RULES (ምንም spelling ወይም ቋንቋ ቢጠቀም intent-ን ተረዳ) ===
 
-ምሳሌዎች:
-"56" → {"action":"book_full","number":56,"name":"${userName}","reply":"እሺ ገቢ 🙏"}
-"81 86" → {"action":"book_multiple","bookings":[{"number":81,"type":"full"},{"number":86,"type":"full"}],"name":"${userName}","reply":"እሺ ገቢ 🙏"}
-"21 ከ 31 ቀይረው" → {"action":"cancel_and_rebook","cancel_number":21,"book_number":31,"book_type":"full","name":"${displayName}","reply":"እሺ ቀይረናል 🙏"}
-"51 ሰርዘው እና 35 ጨምር" → {"action":"cancel_and_rebook","cancel_number":51,"book_number":35,"book_type":"full","name":"${displayName}","reply":"እሺ ቀይረናል 🙏"}
-"21 አላልኩም 51 ነው" → {"action":"cancel_and_rebook","cancel_number":21,"book_number":51,"book_type":"full","name":"${displayName}","reply":"እሺ ቀይረናል 🙏"}
-"21 ሰርዘው" → {"action":"cancel","number":21,"reply":"እሺ ተሰርዟል 🙏"}
-"አልፈልግም 21" → {"action":"cancel","number":21,"reply":"እሺ ተሰርዟል 🙏"}
-"51 ሙሉ አድርገው" → {"action":"change_type","number":51,"new_type":"full","reply":"እሺ ሙሉ ተደርጓል 🙏"}
-"51 ግማሽ አድርገው" → {"action":"change_type","number":51,"new_type":"half","reply":"እሺ ግማሽ ተደርጓል 🙏"}
-"56 አበበ ብለህ ያዝ" → {"action":"book_full","number":56,"name":"አበበ","reply":"እሺ አበበ ብለህ ተይዟል 🙏"}
-"ለኔ አበበ በል" → {"action":"save_nickname","nickname":"አበበ","reply":"እሺ ከአሁን በኋላ አበበ ብዬ እጠራሃለሁ 🙏"}
-"ስሜ ቀይር አበበ" → {"action":"save_nickname","nickname":"አበበ","reply":"እሺ ስምህ ተቀይሯል 🙏"},"bookings":[{"number":11,"type":"half"},{"number":21,"type":"half"},{"number":23,"type":"full"}],"name":"${userName}","reply":"እሺ ገቢ 🙏"}
-"ቁጥር አለ?" → {"action":"reply","reply":"✅ ነፃ slots: [ዝርዝር]"}
+1. HALF BOOKING intent:
+   - ምልክቶች: +, half, gmash, gemash, ግማሽ, 1/2, gmash, hafF, haf
+   - action: book_half_p1 (single) ወይም book_multiple type:"half"
+
+2. FULL BOOKING intent:
+   - ቁጥር ብቻ ሲጽፍ = full booking
+   - action: book_full ወይም book_multiple type:"full"
+
+3. ቀይር intent (cancel_and_rebook):
+   - ቃላት: ወደ, በ, change, from, to, replace, ቀይር, ቀይረው, ቀይርልኝ, swap
+   - format: {"action":"cancel_and_rebook","cancel_number":X,"book_number":Y,"book_type":"full","name":"${bookingName}","reply":"እሺ ቀይረናል 🙏"}
+
+4. ስም ጠቅሶ ያዝ intent:
+   - ቃላት: ያዝ, set, bel, ble, በል, hold, ብለህ, ብላ, ስም, name
+   - format: {"action":"book_full","number":X,"name":"[ያ ስም]","reply":"እሺ [ስም] ብለህ ተይዟል 🙏"}
+
+5. ሰርዝ intent:
+   - ቃላት: ሰርዝ, cancel, remove, አልፈልግም, አውጣ, delete, sriz, sarez
+   - format: {"action":"cancel","number":X,"reply":"እሺ ተሰርዟል 🙏"}
+
+6. ነፃ slot ጥያቄ intent:
+   - ቃላት: አለ?, ነፃ, free, yale, ale, ቁጥር አለ, available
+   - format: {"action":"reply","reply":"✅ ነፃ slots: [ዝርዝር]"}
+
+7. NICKNAME intent:
+   - ቃላት: ለኔ...በል, ስሜ, my name, call me, nickname
+   - format: {"action":"save_nickname","nickname":"[ስም]","reply":"እሺ ተቀይሯል 🙏"}
+
+=== IMPORTANT RULES ===
+- የተያዘ slot → "ተቀድመሃል ቤተሰብ 🙏"
+- እራሱ ያዘ → "ይዥሃለሁ ቤተሰብ 🙏"
+- ክፍያ screenshot → "ተቀብዬአለሁ ✅ Admin ያረጋግጣል"
+- leading zero ያለው ቁጥር: "01"=1, "06"=6, "09"=9
+- nickname ካለ ሁሌ nickname ተጠቀም
 
 JSON ብቻ:`;
-
   const raw = await geminiCall(prompt, 250, 0.1);
   console.log("🧠 AI raw:", raw);
 
