@@ -18,11 +18,8 @@ const GEMINI_KEYS = [
 ].filter(Boolean);
 
 let geminiKeyIndex = 0;
-function getNextGeminiKey() {
-  const key = GEMINI_KEYS[geminiKeyIndex % GEMINI_KEYS.length];
-  geminiKeyIndex++;
-  return key;
-}
+const exhaustedKeys = new Set();
+  ,
 
 // ==================== LOTTERY TEMPLATE ====================
 const LOTTERY_TEMPLATE = `በ 400 ብር 5 ቁጥሮችን በተከታታይ በመያዝ እድሎን ይሞክሩ ለ 20 ሰው ብቻ ፈጣን ዕድል መልካም ዕድል
@@ -350,8 +347,18 @@ function buildShortState(data) {
 // ==================== GEMINI ====================
 
 async function geminiCall(prompt, maxTokens = 300, temperature = 0.1) {
+  if (exhaustedKeys.size >= GEMINI_KEYS.length) {
+    exhaustedKeys.clear();
+    console.log("🔄 ሁሉም keys exhausted — reset ተደረገ");
+  }
+
   for (let attempt = 0; attempt < GEMINI_KEYS.length; attempt++) {
-    const key        = getNextGeminiKey();
+    const keyIdx = geminiKeyIndex % GEMINI_KEYS.length;
+    geminiKeyIndex++;
+
+    if (exhaustedKeys.has(keyIdx)) continue;
+
+    const key        = GEMINI_KEYS[keyIdx];
     const keyPreview = key.slice(0, 8) + "...";
     try {
       const genAI = new GoogleGenerativeAI(key);
@@ -361,18 +368,19 @@ async function geminiCall(prompt, maxTokens = 300, temperature = 0.1) {
       });
       const result = await model.generateContent(prompt);
       const text   = result.response.text().trim();
-      console.log(`✅ Gemini OK (key: ${keyPreview})`);
+      console.log(`✅ Gemini OK (key ${keyIdx + 1}: ${keyPreview})`);
       return text;
     } catch (e) {
       const err = String(e);
       if (err.includes("RESOURCE_EXHAUSTED") || err.toLowerCase().includes("quota") || err.includes("429")) {
-        console.log(`⚠️ Quota exhausted key ${keyPreview}, trying next...`);
+        exhaustedKeys.add(keyIdx);
+        console.log(`⚠️ Key ${keyIdx + 1} exhausted — ተዘሉ`);
         continue;
       }
-      console.log(`⚠️ Gemini error (key: ${keyPreview}):`, err);
+      console.log(`⚠️ Gemini error (key ${keyIdx + 1}):`, err);
     }
   }
-  console.log("🔴 ሁሉም Gemini keys quota ተጠቀሱ");
+  console.log("🔴 ሁሉም Gemini keys exhausted ናቸው");
   return "";
 }
 
@@ -760,26 +768,26 @@ bot.on("message:text", async (ctx) => {
     return;
   }
 
-  // GROUP MODE
+   // GROUP MODE
   const data = await loadData();
   console.log(`📩 ${userName} (${userId}): '${rawText}'`);
   await saveUserChatMessage(userId, "user", rawText);
 
   const actionData = await aiBrain(rawText, userId, userName, data);
   console.log("🧠 Action:", actionData);
-// nickname save
+
   if (actionData.action === "save_nickname" && actionData.nickname) {
     await saveUserNickname(userId, actionData.nickname);
     await ctx.reply(actionData.reply || "✅ ስምህ ተቀይሯል!");
     return;
   }
-  if (actionData.action === "ask") {
+
+  if (actionData.action === "ask" || actionData.action === "reply") {
     const reply = actionData.reply || "❓";
     await saveUserChatMessage(userId, "assistant", reply);
     await ctx.reply(reply);
     return;
   }
-
   const result = executeAction(actionData, userId, data);
 
   if (result.changed) {
