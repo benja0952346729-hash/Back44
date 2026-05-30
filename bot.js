@@ -676,8 +676,7 @@ CANCEL keywords: ሰርዝ, cancel, sriz, remove, arg, argew, del, delete, alfel
 
 CHANGE keywords: ቀይር, change, swap, replace, to, ወደ, mkeyir, chng, chage, swp, replce, keyir, kyr, wede, chanje
 
-NAME BOOKING keywords: በል, ብለህ, ብላ, bleh, blo, bl, yaz, hold, set, say, ስም, name, ነው, ብሎ, yazlign, yazlih, yazlgn, bhlo, yazlh, bel
-
+NAME BOOKING keywords: በል, ብለህ, ብላ, bleh, blo, bl, yaz, hold, set, say, ስም, name, ነው, ብሎ, yazlign, yazlih, yazlgn, bhlo, yazlh, bel, yazachew, yazachw
 ★★★ AMHARIC ACTION WORDS — ስም አይደሉም! ★★★
 እነዚህ ቃሎች booking COMMANDS ናቸው — ስም አይደሉም:
 ቢል = ቢያዝ = ያዝ = book/hold (NOT a name!)
@@ -692,7 +691,10 @@ NAME BOOKING keywords: በል, ብለህ, ብላ, bleh, blo, bl, yaz, hold, set,
 ደሞ = "also/and" → ቀዳሚ ስም ተጠቀም
 እንዲሁ = same → ቀዳሚ ስም ተጠቀም
 asgom = አስጎም = same name as before
-
+yazachew = yazlign = ያዝልኝ = command (NOT a name!)
+★ ነገር ግን keyword (bl/bel/በል...) ከ yazachew በኋላ ካለ → ስም ነው!
+"51 yazachew bl"   → name=yazachew  type=full
+"51 yazachew በል"  → name=yazachew  type=full
 "31በሙሉ አቤል 11begmas አስጎም አቤል" →
   31=full name=አቤል, 11=half name=አቤል (አስጎም=እሱንም=same name!)
   JSON: {"action":"book_multiple","bookings":[{"number":31,"type":"full","name":"አቤል"},{"number":11,"type":"half","name":"አቤል"}],"reply":"እሺ አቤል ሁሉም ተይዟል 🙏"}
@@ -788,6 +790,9 @@ RANGE examples — ግማሽ ናቸው (+ ምልክት አለ OR gmash keyword):
 
 ★★★ SLASH "/" SEPARATOR — ሁለት ቁጥር በ slash ★★★
 slash "/" = ሁለት የተለያዩ ቁጥሮች ናቸው — book_multiple!
+"51%56 sara"        → numbers=51,56  name=sara  type=full  → book_multiple
+"51%56+"            → numbers=51,56  type=half  → book_multiple
+"51%56 yazachew"    → numbers=51,56  name=${bookingName}  type=full  → book_multiple (yazachew=command)
 "56/66yazachew"    → numbers=56,66  name=yazachew  type=full  → book_multiple
 "56/66 yazachew"   → numbers=56,66  name=yazachew  type=full  → book_multiple
 "56/66"            → numbers=56,66  type=full  → book_multiple
