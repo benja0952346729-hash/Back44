@@ -587,12 +587,83 @@ ${historyText}
 
 ሰዎች አማርኛ፣ latin፣ ወይም mixed ይጽፋሉ። ሁሉንም ተረዳ:
 
-HALF: +, g, ግ, ግማ, ግማሽ, half, gmash, haf, gmas, gem, gm, 1/2, gmsh
-FULL: ምንም ምልክት፣ mulu, full, ሙሉ, fll, mul
-CANCEL: ሰርዝ, cancel, sriz, remove, arg, argew, del, delete, alfelgm
-CHANGE: ቀይር, change, swap, replace, to, ወደ, mkeyir
-NAME BOOKING: በል, ብለህ, ብላ, bleh, blo, bl, yaz, hold, set, say
-ACCOUNT/PAYMENT INFO: አካውንት, account, akawnt, akawont, pay, ክፍያ, bank, cbe, telebr, telebirr
+HALF keywords: +, g, ግ, ግማ, ግማሽ, half, gmash, haf, gmas, gem, gm, 1/2, gmsh, grash, gmsh, gmash, gmas, bgmash, bgmash, bgramash
+HALF ምሳሌ: "21+" "21g" "21gmash" "21 gmash" "21 half" "21gm" "21 ግማሽ" "21ግ" "21 haf" "21grash" "21 gem" "21bgmash" "21 1/2"
+
+FULL keywords: ምንም ምልክት፣ mulu, full, ሙሉ, fll, mul, fll, mlu, fuul, fful, mulu, mluu
+FULL ምሳሌ: "21" "21 full" "21mulu" "21 ሙሉ" "21fll" "21mul" "21 fuul" "21 mluu" "21mlu"
+
+CANCEL keywords: ሰርዝ, cancel, sriz, remove, arg, argew, del, delete, alfelgm, srez, sriz, kansel, cncel, rmove, delet, srz, alfelgm, lflegm
+CANCEL ምሳሌ: "21 ሰርዝ" "21 cancel" "21 sriz" "21 arg" "21 argew" "21 del" "21 remove" "21 alfelgm" "21 srez" "21 cncel" "21 rmove" "21 srz"
+
+CHANGE keywords: ቀይር, change, swap, replace, to, ወደ, mkeyir, chng, chage, swp, replce, keyir, kyr, wede, chanje
+CHANGE ምሳሌ: "21 ወደ 41" "21 to 41" "21 change 41" "21 swap 41" "21 ቀይር 41" "21 mkeyir 41" "21 replace 41" "21wede41" "21 chanje 41" "21 kyr 41"
+
+NAME BOOKING keywords: በል, ብለህ, ብላ, bleh, blo, bl, yaz, hold, set, say, ስም, name, ነው, ብሎ, yazlign, yazlih, yazlgn, bleh, yazlgn, bhlo, yaz, yazlh
+★ NAME BOOKING ምሳሌዎች (ስም ማንኛውም ቃል ሊሆን ይችላል — አማርኛ든 latin든):
+"01 በግማሽ አስቴር በል" → ስም=አስቴር, number=1, type=half
+"76 በላይ በል" → ስም=በላይ, number=76, type=full
+"31+ mike" → ስም=mike, number=31, type=half
+"96 sara full" → ስም=sara, number=96, type=full
+"21 ያዝልኝ dawit ነው" → ስም=dawit, number=21, type=full
+"51 በግማሽ chaltu ብለህ ያዝ" → ስም=chaltu, number=51, type=half
+"11 abebe gmash" → ስም=abebe, number=11, type=half
+"61 meron mulu" → ስም=meron, number=61, type=full
+"81 selam bleh yaz" → ስም=selam, number=81, type=full
+"41+ tigist bl" → ስም=tigist, number=41, type=half
+"91 በሙሉ daniel በል" → ስም=daniel, number=91, type=full
+"16+ liya yazlgn" → ስም=liya, number=16, type=half
+"36 hana ነው" → ስም=hana, number=36, type=full
+"71gmash sara blo" → ስም=sara, number=71, type=half
+"06 full kalkidan bl" → ስም=kalkidan, number=6, type=full
+"56+ yared set" → ስም=yared, number=56, type=half
+"26 hold biruk" → ስም=biruk, number=26, type=full
+"46 ግማሽ meseret ብላ" → ስም=meseret, number=46, type=half
+"86 amara say" → ስም=amara, number=86, type=full
+"66+ nati yazlih" → ስም=nati, number=66, type=half
+"76 ሙሉ kidist blo" → ስም=kidist, number=76, type=full
+"31 ግማሽ abdi ብለህ ያዝ" → ስም=abdi, number=31, type=half
+"96 ቀጥታ ስሙ abel" → ስም=abel, number=96, type=full
+"01 grmash hewan bl" → ስም=hewan, number=1, type=half
+"11 tsion full yaz" → ስም=tsion, number=11, type=full
+→ ቁጥር ከጎን ያለ ማንኛውም ስም-ያህል ቃል ስም ነው። keyword ካለ ሁሌ ስሙን አውጣ።
+
+ACCOUNT/PAYMENT INFO keywords: አካውንት, account, akawnt, akawont, pay, ክፍያ, bank, cbe, telebr, telebirr, akawon, akawunt, akhawnt, peiy, banka
+ACCOUNT ምሳሌ: "አካውንት ላክ" "cbe ላክ" "telebr" "telebirr" "account" "pay info" "ክፍያ ቁጥር" "bank" "akawnt" "akawont ላክልኝ"
+
+★ ቁጥር RANGE — ሰዎች ቡድን range ሲጽፉ መጀመሪያው ቁጥር ብቻ ይወሰዳል:
+ቡድኖች: 1-5, 6-10, 11-15, 16-20, 21-25, 26-30, 31-35, 36-40, 41-45, 46-50,
+        51-55, 56-60, 61-65, 66-70, 71-75, 76-80, 81-85, 86-90, 91-95, 96-100
+→ range ሲጽፉ = የቡድኑ FIRST number ነው intent
+
+"01-05"  → number=1    "1-5"    → number=1
+"06-10"  → number=6    "6-10"   → number=6
+"11-15"  → number=11   "1115"   → number=11
+"16-20"  → number=16   "16 20"  → number=16
+"21-25"  → number=21   "2125"   → number=21   "21 25" → number=21
+"26-30"  → number=26   "2630"   → number=26
+"31-35"  → number=31   "31,35"  → number=31   "3135"  → number=31
+"36-40"  → number=36   "36 40"  → number=36
+"41-45"  → number=41   "4145"   → number=41
+"46-50"  → number=46   "46,50"  → number=46
+"51-55"  → number=51   "5155"   → number=51
+"56-60"  → number=56   "56 60"  → number=56
+"61-65"  → number=61   "6165"   → number=61
+"66-70"  → number=66   "66,70"  → number=66
+"71-75"  → number=71   "7175"   → number=71
+"76-80"  → number=76   "76 80"  → number=76
+"81-85"  → number=81   "8185"   → number=81
+"86-90"  → number=86   "86,90"  → number=86
+"91-95"  → number=91   "9195"   → number=91
+"96-100" → number=96   "96 100" → number=96   "96100" → number=96
+
+ምሳሌ:
+"21-25 ያዝ"     → number=21, type=full
+"31,35+"        → number=31, type=half
+"01-05 gmash"   → number=1,  type=half
+"96100 sara bl" → number=96, name=sara, type=full
+"4145 ሰርዝ"     → cancel number=41
+"2125 ወደ 3135"  → cancel_and_rebook cancel=21 book=31
 
 ════════════════════════════════════
  BOOKING RULES
@@ -602,8 +673,24 @@ ACCOUNT/PAYMENT INFO: አካውንት, account, akawnt, akawont, pay, ክፍያ,
 ግማሽ → book_half_p1 → "እሺ በግማሽ ተይዟል 🙏"
 ሙሉ  → book_full → [FULL_REPLY]
 
-── CASE 2: የራሱ slot ዳግም ጠራ ──
-→ change_type full → "ሙሉ ሆኗል 🙏"
+★ ብዙ ቁጥር በአንድ message (MULTIPLE BOOKING):
+ሁሉም ሙሉ → book_multiple (bookings array)
+"21 31 41" → {"action":"book_multiple","bookings":[{"number":21,"type":"full"},{"number":31,"type":"full"},{"number":41,"type":"full"}],"name":"${bookingName}","reply":"እሺ ሁሉም ተይዟል 🙏"}
+"21+ 31+ 41+" → {"action":"book_multiple","bookings":[{"number":21,"type":"half"},{"number":31,"type":"half"},{"number":41,"type":"half"}],"name":"${bookingName}","reply":"እሺ ሁሉም በግማሽ ተይዟል 🙏"}
+"21 31+ 41" → mixed → ask_clarify
+"21 31" → book_multiple ሁለቱም ሙሉ
+"21+ 31+" → book_multiple ሁለቱም ግማሽ
+
+★ ስም + ብዙ ቁጥር:
+"21 31 dawit bl" → {"action":"book_multiple","bookings":[{"number":21,"type":"full"},{"number":31,"type":"full"}],"name":"dawit","reply":"እሺ dawit ሁሉም ተይዟል 🙏"}
+"21+ 31+ sara" → {"action":"book_multiple","bookings":[{"number":21,"type":"half"},{"number":31,"type":"half"}],"name":"sara","reply":"እሺ sara ሁሉም በግማሽ ተይዟል 🙏"}
+"11 21 31 abel yaz" → book_multiple ሦስቱም abel ሙሉ
+"16+ 26+ tigist bl" → book_multiple ሁለቱም tigist ግማሽ
+
+── CASE 2: የራሱ ቁጥር ዳግም ጠራ ──
+ሙሉ ያዘ + ዳግም ሙሉ ("21") → {"action":"reply","reply":"ቀድሞ ይዘሃል ቤተሰብ 🙏"}
+ሙሉ ያዘ + "+" ምልክት ("21+") → change_type half → "እሺ በግማሽ ተቀይሯል 🙏"
+ግማሽ ያዘ + ምልክት የለም ("21") → change_type full → "ሙሉ ሆኗል 🙏"
 
 ── CASE 3: ሌላ user ግማሽ slot ──
 → book_half_p2 → "እሺ በግማሽ ተይዟል 🙏"
@@ -634,8 +721,21 @@ ACCOUNT/PAYMENT INFO: አካውንት, account, akawnt, akawont, pay, ክፍያ,
 ሰርዝ:
 {"action":"cancel","number":X,"reply":"እሺ ተሰርዟል 🙏"}
 
-ነፃ slot ጥያቄ:
-{"action":"reply","reply":"✅ ነፃ slots: [ዝርዝር]"}
+★ SLOT STATUS ጥያቄ (ቁጥር አለ? free ነው? ተይዟል?):
+"21 አለ?" "21 free ነው?" "21 ይገኛል?" "21 ተይዟል?" "21 open ነው?" "is 21 free?" "21 yeteya?" →
+slot ሁኔታ ተመልከት → ነፃ ከሆነ: {"action":"reply","reply":"✅ 21 ነፃ ነው!"}
+→ የተያዘ ከሆነ: {"action":"reply","reply":"❌ 21 ተይዟል"}
+"ምን ቀረ?" "ስንት ቀረ?" "ነፃ ምንድን ነው?" "free slots?" "min qere?" →
+{"action":"reply","reply":"✅ ነፃ ቁጥሮች: [ዝርዝር ከstate]"}
+
+★ ክፍያ CONFIRM (ከፍዬአለሁ / paid / screenshot):
+"ከፈልኩ" "ላክሁ" "paid" "slelaku" "sllakhu" "ከፍዬአለሁ" "payed" "transfered" "sent" "screenshot" →
+{"action":"reply","reply":"ተቀብዬአለሁ ✅ Admin ያረጋግጣል"}
+
+★ የራሱን SLOT ጥያቄ (ያዝኩ? mine? የኔ?):
+"ያዝኩ?" "የኔ ምንድን ነው?" "mine?" "yaze?" "my number?" "የኔ ቁጥር?" "ምን ያዝኩ?" "yazku?" →
+user slots ዝርዝር ተመልከት → {"action":"reply","reply":"የያዝካቸው ቁጥሮች: [ዝርዝር] 🙏"}
+ምንም ካልያዘ → {"action":"reply","reply":"እስካሁን ምንም አልያዝህም 🙏"}
 
 NICKNAME (call me X / ስሜ X ነው / my name is X):
 {"action":"save_nickname","nickname":"[ስም]","reply":"እሺ ተቀይሯል 🙏"}
@@ -650,7 +750,7 @@ CANCEL PENDING:
 ════════════════════════════════════
  IMPORTANT RULES
 ════════════════════════════════════
-- የተያዘ slot (ሌላ ሰው) → {"action":"reply","reply":"ተቀድመሃል ቤተሰብ 🙏"}
+- የተያዘ ቁጥር (ሌላ ሰው) → {"action":"reply","reply":"ተቀድመሃል ቤተሰብ 🙏"}
 - እራሱ ያዘ → self re-book logic
 - ቅሬታ፣ ስድብ፣ ክርክር → {"action":"reply","reply":"እኔ የቢንያም online አጋዝ robot ነኝ ለማንኛውም ጥያቄ በ 0952346729 ይደውሉ 😍"}
 - ክፍያ screenshot → {"action":"reply","reply":"ተቀብዬአለሁ ✅ Admin ያረጋግጣል"}
@@ -1109,7 +1209,7 @@ bot.on("message:text", async (ctx) => {
 
     const filled = Object.values(result.data.slots).filter(isSlotFullBooked).length;
     if (filled === 20) {
-      await ctx.reply("🎉 ሁሉም slots ተሞልቷል! ዕጣ ቅርብ ነው! 🎰");
+      await ctx.reply("🎉 ሁሉም ቁጥሮች ተሞልቷል! ዕጣ ቅርብ ነው! 🎰");
     }
   }
 
@@ -1122,7 +1222,7 @@ bot.on("message:text", async (ctx) => {
     } else if (act === "book_full" || act === "book_multiple") {
       finalReply = getFullReply(bookingName2);
     } else if (act === "change_type" || act === "change_type_multiple") {
-      finalReply = getFullChangedReply();
+      finalReply = actionData.new_type === "half" ? "እሺ በግማሽ ተቀይሯል 🙏" : getFullChangedReply();
     } else if (act === "book_half_p2") {
       finalReply = getP2JoinReply();
     } else if (act === "cancel_and_rebook") {
