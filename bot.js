@@ -656,6 +656,22 @@ CHANGE keywords: ቀይር, change, swap, replace, to, ወደ, mkeyir, chng, cha
 
 NAME BOOKING keywords: በል, ብለህ, ብላ, bleh, blo, bl, yaz, hold, set, say, ስም, name, ነው, ብሎ, yazlign, yazlih, yazlgn, bhlo, yazlh, bel
 
+★★★ AMHARIC ACTION WORDS — ስም አይደሉም! ★★★
+እነዚህ ቃሎች booking COMMANDS ናቸው — ስም አይደሉም:
+ቢል = ቢያዝ = ያዝ = book/hold (NOT a name!)
+ቢላ = ቢያዘው = ያዝ
+ያዝልን = ያዝ
+ያዝልኝ = ያዝ
+ይያዝልኝ = ያዝ
+ቁጥሩን ያዝ = ያዝ
+
+"65/21/41 ቢል"    → numbers=65,21,41  type=full  name=${bookingName} (ቢል=command!)
+"21 ቢል"          → number=21  type=full  name=${bookingName}
+"21 ቢያዝ"         → number=21  type=full  name=${bookingName}
+"21+ ቢል"         → number=21  type=half  name=${bookingName}
+"21 ቢላ"          → number=21  type=full  name=${bookingName}
+"65/21/41 ቢያዘው"  → numbers=65,21,41  type=full  name=${bookingName}
+
 ACCOUNT/PAYMENT: አካውንት, account, akawnt, akawont, pay, ክፍያ, bank, cbe, telebr, telebirr
 
 ════════════════════════════════════
@@ -729,15 +745,33 @@ RANGE examples — ግማሽ ናቸው (+ ምልክት አለ OR gmash keyword):
 ሙሉ  → book_full
 
 ★ ብዙ ቁጥር (MULTIPLE BOOKING):
-"21 31 41"   → book_multiple ሁሉም full
-"21+ 31+ 41+"→ book_multiple ሁሉም half
-"21 31+ 41"  → mixed → ask_clarify
-"21 31"      → book_multiple ሁለቱም full
-"21+ 31+"    → book_multiple ሁለቱም half
+"21 31 41"    → book_multiple ሁሉም full
+"21+ 31+ 41+" → book_multiple ሁሉም half
+"21 31+ 41"   → mixed → ask_clarify
+"21 31"       → book_multiple ሁለቱም full
+"21+ 31+"     → book_multiple ሁለቱም half
 
-★ ስም + ብዙ ቁጥር:
-"21 31 dawit bl"  → book_multiple ሁለቱም dawit full
-"21+ 31+ sara"    → book_multiple ሁለቱም sara half
+★★★ SLASH "/" SEPARATOR — ሁለት ቁጥር በ slash ★★★
+slash "/" = ሁለት የተለያዩ ቁጥሮች ናቸው — book_multiple!
+"56/66yazachew"    → numbers=56,66  name=yazachew  type=full  → book_multiple
+"56/66 yazachew"   → numbers=56,66  name=yazachew  type=full  → book_multiple
+"56/66"            → numbers=56,66  type=full  → book_multiple
+"56/66+"           → numbers=56,66  type=half  → book_multiple
+"21/31 dawit"      → numbers=21,31  name=dawit  type=full  → book_multiple
+"21/31+ dawit"     → numbers=21,31  name=dawit  type=half  → book_multiple
+"21/31 dawit bl"   → numbers=21,31  name=dawit  type=full  → book_multiple
+"11/21/31 abel"    → numbers=11,21,31  name=abel  type=full  → book_multiple
+"56/66 gmash sara" → numbers=56,66  name=sara  type=half  → book_multiple
+"56/66 half"       → numbers=56,66  type=half  → book_multiple
+"01/11/21 yaz"     → numbers=1,11,21  type=full  → book_multiple
+"46/56 tigist bl"  → numbers=46,56  name=tigist  type=full  → book_multiple
+"46/56+ tigist"    → numbers=46,56  name=tigist  type=half  → book_multiple
+"76/86yazachew"    → numbers=76,86  name=yazachew  type=full  → book_multiple
+"56/66yazachew" JSON → {"action":"book_multiple","bookings":[{"number":56,"type":"full"},{"number":66,"type":"full"}],"name":"yazachew","reply":"እሺ yazachew ሁሉም ተይዟል 🙏"}
+
+★ ስም + ብዙ ቁጥር (space separator):
+"21 31 dawit bl"   → book_multiple ሁለቱም dawit full
+"21+ 31+ sara"     → book_multiple ሁለቱም sara half
 "11 21 31 abel yaz"→ book_multiple ሦስቱም abel full
 "16+ 26+ tigist bl"→ book_multiple ሁለቱም tigist half
 
