@@ -41,7 +41,6 @@ const FULL_REPLIES = [
 ];
 
 function getFullReply(name) {
-  // አልፎ አልፎ ስም ይጠቀማል
   const withName = `እሺ ${name} 🙏 ገቢ`;
   const all = [...FULL_REPLIES, withName];
   return all[Math.floor(Math.random() * all.length)];
@@ -140,7 +139,6 @@ async function initDb() {
         updated_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
-    // NEW: pending bookings table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS pending_bookings (
         id          SERIAL PRIMARY KEY,
@@ -230,7 +228,6 @@ async function resetSlots() {
 
 async function savePending(userId, userName, chatId, question, context) {
   try {
-    // expires in 1.5 minutes
     await pool.query(
       `INSERT INTO pending_bookings (user_id, user_name, chat_id, question, context, expires_at)
        VALUES ($1, $2, $3, $4, $5::jsonb, NOW() + INTERVAL '90 seconds')
@@ -284,7 +281,6 @@ async function deleteExpiredPendings() {
   }
 }
 
-// Check if a slot/number is pending by another user
 async function getNumberPendingByOther(number, userId) {
   try {
     const res = await pool.query(
@@ -489,7 +485,6 @@ function buildShortState(data) {
   return lines.join("\n");
 }
 
-// Get all slots owned by a user
 function getUserSlots(userId, data) {
   const result = [];
   for (const [slotId, slot] of Object.entries(data.slots)) {
@@ -571,16 +566,19 @@ async function aiBrain(userMessage, userId, userName, data) {
       }).join(", ")
     : "ምንም";
 
-  const systemPrompt = `አንተ የሎተሪ booking AI ነህ። JSON ብቻ መልስ። ምንም explanation አትጨምር።
+  const systemPrompt = `አንተ ብልህ የሎተሪ AI ነህ። JSON ብቻ መልስ። ምንም explanation አትጨምር።
 
-አንተ በጣም ብልህ AI ነህ — ሰዎች የሚጽፉትን INTENT ተረዳ። አማርኛ든 latin든 mixed든 የተሳሳተ spelling든 ሁሉንም ተረዳ። እንደ አዋቂ ሰው አስብ።
+★ THINK FIRST — ከዚህ በታች ያሉ rules template ናቸው። ግን አንተ brain አለህ!
+  ሰዎች የሚጽፉትን INTENT ተረዳ። Context አንብብ። Common sense ተጠቀም።
+  Rules ካልሸፈነው → አስብ፣ ትክክለኛ action ምረጥ።
+  ታሪክ ተጠቀም — ቀዳሚ ጥያቄ ካለ continuation ተከተል።
 
 nickname: ${savedNick ? `"${savedNick}"` : "የለም"}
 የዚህ user slots: ${userSlotsText}
 ሁኔታ: ${fullState}
 ${adminRules}
 
-የቅርብ ጊዜ ታሪክ (context):
+የቅርብ ጊዜ ታሪክ:
 ${historyText}
 
 ════════════════════════════════════
@@ -589,51 +587,33 @@ ${historyText}
 
 ሰዎች አማርኛ፣ latin፣ ወይም mixed ይጽፋሉ። ሁሉንም ተረዳ:
 
-HALF ማለት: +, g, ግ, ግማ, ግማሽ, half, gmash, haf, gmas, gem, gm, 1/2, gmsh
-FULL ማለት: ምንም ምልክት፣ mulu, full, ሙሉ, fll, mul
-CANCEL ማለት: ሰርዝ, cancel, sriz, remove, arg, argew, del, delete, alfelgm
-CHANGE ማለት: ቀይር, change, swap, replace, to, ወደ, mkeyir
-NAME BOOKING ማለት: በል, ብለህ, ብላ, bleh, blo, bl, yaz, hold, set, say
-
-★ ስም — latin든 አማርኛ든:
-  "81 selm bleh yaz" → ስም=selm, 81 ሙሉ
-  "76 በላይ በል" → ስም=በላይ, 76 ሙሉ
-  "31+ mike gmash" → ስም=mike, 31 ግማሽ
-  "96 sara full" → ስም=sara, 96 ሙሉ
-
-★ ቁጥር intent — ሁሉም:
-  "21+" / "21g" / "21gmash" / "21half" → ግማሽ
-  "21" / "21full" / "21mulu" → ሙሉ
-  "51 56 61+" → mixed → clarify
-  "51gmash 56gmash" → ሁሉም ግማሽ → ቀጥታ ያዝ
+HALF: +, g, ግ, ግማ, ግማሽ, half, gmash, haf, gmas, gem, gm, 1/2, gmsh
+FULL: ምንም ምልክት፣ mulu, full, ሙሉ, fll, mul
+CANCEL: ሰርዝ, cancel, sriz, remove, arg, argew, del, delete, alfelgm
+CHANGE: ቀይር, change, swap, replace, to, ወደ, mkeyir
+NAME BOOKING: በል, ብለህ, ብላ, bleh, blo, bl, yaz, hold, set, say
+ACCOUNT/PAYMENT INFO: አካውንት, account, akawnt, akawont, pay, ክፍያ, bank, cbe, telebr, telebirr
 
 ════════════════════════════════════
- CORE BOOKING RULES
+ BOOKING RULES
 ════════════════════════════════════
 
 ── CASE 1: ነፃ slot ──
-ግማሽ → book_half_p1 → reply: "እሺ በግማሽ ተይዟል 🙏"
-ሙሉ  → book_full → reply: [FULL_REPLY]
+ግማሽ → book_half_p1 → "እሺ በግማሽ ተይዟል 🙏"
+ሙሉ  → book_full → [FULL_REPLY]
 
-── CASE 2: የራሱ slot ዳግም ጠራ (SELF RE-BOOK) ──
-user ቀደም ሲል ያዘው slot ዳግም ጠራ → "ሙሉ አርግልኝ" ማለቱ ነው
-→ change_type full → reply: "ሙሉ ሆኗል 🙏" (ስም አትጨምር)
+── CASE 2: የራሱ slot ዳግም ጠራ ──
+→ change_type full → "ሙሉ ሆኗል 🙏"
 
-── CASE 3: ሌላ user ግማሽ slot ጠራ (P2 JOIN) ──
-slot ግማሽ ነው + ሌላ user ጠራ → book_half_p2
-→ reply: "እሺ በግማሽ ተይዟል 🙏" (ስም አትጨምር)
+── CASE 3: ሌላ user ግማሽ slot ──
+→ book_half_p2 → "እሺ በግማሽ ተይዟል 🙏"
 
 ── CASE 4: MIXED AMBIGUOUS ──
-አንዳንዱ ቁጥር ብቻ "+" ምልክት ካለው → clarify
-→ action: "ask_clarify", random question
-format: {"action":"ask_clarify","reply":"[ጥያቄ]","confirmed_bookings":[],"unclear_numbers":[51,56,61]}
-ሁሉም ግማሽ ምልክት ካላቸው → ቀጥታ ያዝ
+→ ask_clarify
+{"action":"ask_clarify","reply":"[ጥያቄ]","confirmed_bookings":[],"unclear_numbers":[...]}
 
 ── CASE 5: CONTINUATION ──
 ታሪክ ውስጥ ask_clarify ካለ + user መለሰ → ቀጥል
-"ሁለቱም"/"all"/"hulum" → ሁሉንም ያዝ
-"X ብቻ"/"only X" → X ብቻ ያዝ
-"ተው"/"no"/"cancel" → cancel_pending
 
 [FULL_REPLY]: "እሺ ቤተሰብ ተይዟል 🙏" / "እሺ 🙏 ገቢ" / "ተይዟል ቤተሰብ 🙏" / "እሺ [name] 🙏 ገቢ" (random)
 
@@ -641,10 +621,13 @@ format: {"action":"ask_clarify","reply":"[ጥያቄ]","confirmed_bookings":[],"u
  OTHER INTENTS
 ════════════════════════════════════
 
+አካውንት/payment info ሲጠይቅ (account, akawnt, akawont, cbe, telebr, telebirr, ክፍያ, pay, bank):
+{"action":"reply","reply":"💳 የክፍያ አካውንቶች:\n\nCBE 1000641057146 biniyam dawit\nቴሌ ብር 0952346729"}
+
 ቀይር/ተካ:
 {"action":"cancel_and_rebook","cancel_number":X,"book_number":Y,"book_type":"full","name":"${bookingName}","reply":"እሺ ቀይረናል 🙏"}
 
-ስም ጠቅሶ ያዝ (latin ወይም አማርኛ ስም):
+ስም ጠቅሶ ያዝ:
 {"action":"book_full","number":X,"name":"[ያ ስም]","reply":"እሺ ተይዟል 🙏"}
 {"action":"book_half_p1","number":X,"name":"[ያ ስም]","reply":"እሺ በግማሽ ተይዟል 🙏"}
 
@@ -664,28 +647,24 @@ CHANGE TYPE:
 CANCEL PENDING:
 {"action":"cancel_pending","reply":"እሺ ምንም አልያዝኩም 🙏"}
 
-IGNORE (random ሌላ ነገር — ሎተሪ ጋር ምንም ግንኙነት የሌለው):
-{"action":"ignore"}
-
 ════════════════════════════════════
  IMPORTANT RULES
 ════════════════════════════════════
 - የተያዘ slot (ሌላ ሰው) → {"action":"reply","reply":"ተቀድመሃል ቤተሰብ 🙏"}
-- እራሱ ያዘ → self re-book logic ተጠቀም
-- ቅሬታ፣ ስድብ፣ ቁጣ፣ "እኔ ቀድሜ ነበር"፣ "ከፍዬ ነበር"፣ ክርክር ሲሆን → {"action":"reply","reply":"እኔ የቢንያም online አጋዝ robot ነኝ ለማንኛውም ጥያቄ በ 0952346729 ይደውሉ 😍"}
-- ሎተሪ ጋር ምንም ግንኙነት የሌለው random ነገር (ሰላምታ፣ ሌላ ታሪክ፣ ወዘተ) ሲሆን → {"action":"ignore"} (ምንም አትምለስ)
+- እራሱ ያዘ → self re-book logic
+- ቅሬታ፣ ስድብ፣ ክርክር → {"action":"reply","reply":"እኔ የቢንያም online አጋዝ robot ነኝ ለማንኛውም ጥያቄ በ 0952346729 ይደውሉ 😍"}
 - ክፍያ screenshot → {"action":"reply","reply":"ተቀብዬአለሁ ✅ Admin ያረጋግጣል"}
+- ሎተሪ ጋር ፈጽሞ ምንም ግንኙነት የሌለው random ነገር → {"action":"ignore"}
 - leading zero: "01"=1
 - nickname ካለ ሁሌ nickname ተጠቀም
-- reply field ሁሌ ሙሉ አማርኛ መልስ — ባዶ አይሁን
-- ታሪክ አንብብ! context ተረዳ! ቀዳሚ ጥያቄ ካለ continuation ተከተል
+- reply field ሁሌ ሙሉ አማርኛ — ባዶ አይሁን
 
 JSON ብቻ ምለስ:`;
 
   const userPrompt = `ተጠቃሚ: ${userName} (ID:${userId})
 መልእክት: "${userMessage}"`;
 
-  const raw = await groqCall(systemPrompt, userPrompt, 350, 0.5);
+  const raw = await groqCall(systemPrompt, userPrompt, 350, 0.7);
   console.log("🧠 AI raw:", raw);
 
   try {
@@ -708,7 +687,6 @@ async function resolvePendingWithBestGuess(pending, bot) {
     const userName = pending.user_name;
     const chatId = pending.chat_id;
 
-    // Best guess: book confirmed_bookings + pick first unclear as full
     const bookings = [];
 
     if (context.confirmed_bookings && context.confirmed_bookings.length) {
@@ -718,7 +696,6 @@ async function resolvePendingWithBestGuess(pending, bot) {
     }
 
     if (context.unclear_numbers && context.unclear_numbers.length) {
-      // Best guess: take all unclear as full
       for (const num of context.unclear_numbers) {
         bookings.push({ number: num, type: "full" });
       }
@@ -748,7 +725,6 @@ async function resolvePendingWithBestGuess(pending, bot) {
         `⏰ ${bookingName}፣ ምላሽ ስላልሰጠህ/ሽ በግምት ይዤልሃለሁ (${nums}) 🙏`
       );
 
-      // Check if any half slots available to offer
       const userSlots = getUserSlots(userId, data);
       for (const { slot } of userSlots) {
         if (slot.type === "half" && !slot.p2_id) {
@@ -1036,10 +1012,8 @@ bot.on("message:text", async (ctx) => {
   console.log(`📩 ${userName} (${userId}): '${rawText}'`);
   await saveUserChatMessage(userId, "user", rawText);
 
-  // ── Check if user has pending and this might be a reply ──
   const pending = await getPending(userId);
 
-  // ── Check timeout for ALL expired pendings ──
   const expired = await getExpiredPendings();
   for (const exp of expired) {
     if (exp.user_id !== userId) {
@@ -1050,41 +1024,33 @@ bot.on("message:text", async (ctx) => {
   const actionData = await aiBrain(rawText, userId, userName, data);
   console.log("🧠 Action:", actionData);
 
-  // ── Handle ignore (off-topic) ──
   if (actionData.action === "ignore") {
     return;
   }
 
-  // ── Handle cancel_pending ──
   if (actionData.action === "cancel_pending") {
     await deletePending(userId);
     await ctx.reply(actionData.reply || "እሺ ምንም አልያዝኩም 🙏");
     return;
   }
 
-  // ── Handle save_nickname ──
   if (actionData.action === "save_nickname" && actionData.nickname) {
     await saveUserNickname(userId, actionData.nickname);
     await ctx.reply(actionData.reply || "✅ ስምህ ተቀይሯል!");
     return;
   }
 
-  // ── Handle ask_clarify (ambiguous) ──
   if (actionData.action === "ask_clarify") {
-    // Save pending context
     const context = {
       confirmed_bookings: actionData.confirmed_bookings || [],
       unclear_numbers: actionData.unclear_numbers || [],
       numbers: (actionData.unclear_numbers || []).join(","),
     };
 
-    // Check if any unclear number is pending by someone else
-    let sniped = false;
     for (const num of (actionData.unclear_numbers || [])) {
       const otherPending = await getNumberPendingByOther(num, userId);
       if (otherPending) {
         await ctx.reply(`⚡ ቁጥር ${num} ሌላ ሰው እያጣራ ነው። አጣርቼ ይዝልሃለሁ 🙏`);
-        sniped = true;
       }
     }
 
@@ -1092,46 +1058,37 @@ bot.on("message:text", async (ctx) => {
     await saveUserChatMessage(userId, "assistant", actionData.reply);
     await ctx.reply(actionData.reply);
 
-    // Schedule timeout resolver
     setTimeout(async () => {
       const stillPending = await getPending(userId);
       if (stillPending) {
         await resolvePendingWithBestGuess(stillPending, bot);
       }
-    }, 90 * 1000); // 1:30 min
+    }, 90 * 1000);
 
     return;
   }
 
-  // ── Handle ask ──
   if (actionData.action === "ask" || actionData.action === "reply") {
     const reply = actionData.reply || "❓";
     await saveUserChatMessage(userId, "assistant", reply);
     await ctx.reply(reply);
-
-    // If had pending, resolve it
     if (pending) await deletePending(userId);
     return;
   }
 
-  // ── Execute booking action ──
-  // First check if a number being booked is pending by current user (priority claim)
   const bookedNumber = actionData.number ||
     (actionData.bookings && actionData.bookings[0]?.number);
 
   if (bookedNumber) {
     const otherPending = await getNumberPendingByOther(bookedNumber, userId);
     if (otherPending) {
-      // Snipe protection: notify the other user's pending will be resolved
       await ctx.reply(`⚡ ቁጥር ${bookedNumber} ሌላ ሰው እያጣራ ነው። ተቀድመሃል — አጣርቼ ይዝልሃለሁ 🙏`);
-      // Save as pending for this user too
       const context = {
         confirmed_bookings: [{ number: bookedNumber, type: actionData.action === "book_half_p1" ? "half" : "full" }],
         unclear_numbers: [],
         numbers: String(bookedNumber),
       };
       await savePending(userId, userName, chatId, `ቁጥር ${bookedNumber} ልያዝ`, context);
-
       setTimeout(async () => {
         const stillPending = await getPending(userId);
         if (stillPending) {
@@ -1142,7 +1099,6 @@ bot.on("message:text", async (ctx) => {
     }
   }
 
-  // Clear pending if user gave a direct answer
   if (pending) await deletePending(userId);
 
   const result = executeAction(actionData, userId, data);
@@ -1157,7 +1113,6 @@ bot.on("message:text", async (ctx) => {
     }
   }
 
-  // Smart reply based on action type
   const bookingName2 = (await getUserNickname(userId)) || userName;
   let finalReply = result.reply;
   if (result.changed) {
@@ -1170,6 +1125,8 @@ bot.on("message:text", async (ctx) => {
       finalReply = getFullChangedReply();
     } else if (act === "book_half_p2") {
       finalReply = getP2JoinReply();
+    } else if (act === "cancel_and_rebook") {
+      finalReply = "እሺ ቀይረናል 🙏";
     }
   }
 
