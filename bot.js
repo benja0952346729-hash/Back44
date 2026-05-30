@@ -1,6 +1,7 @@
 const { Bot } = require("grammy");
 const { Pool } = require("pg");
 const Groq = require("groq-sdk");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 const http = require("http");
 
 // ==================== CONFIG ====================
@@ -8,6 +9,44 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_TELEGRAM_ID  = parseInt(process.env.ADMIN_TELEGRAM_ID || "0");
 const DATABASE_URL       = process.env.DATABASE_URL;
 const GROQ_API_KEY       = process.env.GROQ_API_KEY;
+
+// ==================== GEMINI KEY POOL ====================
+const geminiKeys = [];
+for (let i = 1; i <= 30; i++) {
+  const key = process.env[`GEMINI_KEY_${i}`];
+  if (key) geminiKeys.push({ key, exhausted: false, resetAt: null });
+}
+console.log(`✅ Gemini keys loaded: ${geminiKeys.length}`);
+
+let geminiKeyIndex = 0;
+
+function getNextGeminiKey() {
+  const now = Date.now();
+  // reset keys ሰዓቱ ካለፈ
+  for (const k of geminiKeys) {
+    if (k.exhausted && k.resetAt && now > k.resetAt) {
+      k.exhausted = false;
+      k.resetAt = null;
+    }
+  }
+  // available key ፈልግ
+  for (let i = 0; i < geminiKeys.length; i++) {
+    const idx = (geminiKeyIndex + i) % geminiKeys.length;
+    if (!geminiKeys[idx].exhausted) {
+      geminiKeyIndex = (idx + 1) % geminiKeys.length;
+      return { key: geminiKeys[idx].key, idx };
+    }
+  }
+  return null; // ሁሉም exhausted
+}
+
+function markGeminiKeyExhausted(idx) {
+  if (geminiKeys[idx]) {
+    geminiKeys[idx].exhausted = true;
+    geminiKeys[idx].resetAt = Date.now() + 60 * 1000; // 1 min reset
+    console.log(`⚠️ Gemini key ${idx + 1} exhausted, switching...`);
+  }
+}
 
 // ==================== GROQ CLIENT ====================
 const groq = new Groq({ apiKey: GROQ_API_KEY });
@@ -30,6 +69,82 @@ async function groqCall(systemPrompt, userPrompt, maxTokens = 300, temperature =
     console.error("❌ Groq error:", e.message);
     return "";
   }
+}
+
+// ==================== GEMINI CALL ====================
+async function geminiCall(systemPrompt, userPrompt, maxTokens = 400) {
+  let attempts = 0;
+  while (attempts < geminiKeys.length) {
+    const result = getNextGeminiKey();
+    if (!result) {
+      console.log("⚠️ All Gemini keys exhausted, falling back to Groq");
+      return null; // Groq fallback
+    }
+    const { key, idx } = result;
+    try {
+      const genAI = new GoogleGenerativeAI(key);
+      const model = genAI.getGenerativeModel({
+        model: "gemini-2.0-flash",
+        systemInstruction: systemPrompt,
+      });
+      const response = await model.generateContent({
+        contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+        generationConfig: { maxOutputTokens: maxTokens, temperature: 0.7 },
+      });
+      const text = response.response.text().trim();
+      console.log(`✅ Gemini key ${idx + 1} OK`);
+      return text;
+    } catch (e) {
+      if (e.message?.includes("429") || e.message?.includes("quota") || e.message?.includes("RESOURCE_EXHAUSTED")) {
+        markGeminiKeyExhausted(idx);
+        attempts++;
+        continue;
+      }
+      console.error(`❌ Gemini key ${idx + 1} error:`, e.message);
+      attempts++;
+    }
+  }
+  console.log("⚠️ All Gemini keys failed, falling back to Groq");
+  return null;
+}
+
+// ==================== PATTERN MATCHER ====================
+// ምሳሌዎቹን የሚመስሉ clear patterns → Groq
+// አዲስ/ውስብስብ → Gemini
+
+const CLEAR_PATTERNS = [
+  // ቁጥር + keyword patterns
+  /^\d{1,3}[\+]?\s*\w+\s*(bl|bel|yaz|hold|set|say|በል|ብለህ|ብላ|blo|bleh|yazlgn|yazlih|yazachew|yazachw|ያዝ)$/i,
+  // slash separator
+  /^\d{1,3}[\/\%]\d{1,3}/,
+  // range patterns
+  /\d{1,3}\s*(isk|to|end|wede|esk|eslk|-)\s*\d{1,3}/i,
+  // simple number only
+  /^\d{1,3}[\+]?$/,
+  // cancel patterns
+  /\d{1,3}.*?(arg|sriz|cancel|ሰርዝ|argew|srez)/i,
+  // paid patterns
+  /ከፈልኩ|paid|screenshot/i,
+  // account patterns
+  /አካውንት|account|akawnt|pay|ክፍያ|cbe|telebr|telebirr/i,
+  // multiple numbers with slash
+  /^\d{1,3}[\/\%\+]\d{1,3}[\/\%\+]?\d{0,3}/,
+  // gmash/half/full + number
+  /^(gmash|half|bgmash|ግማሽ|mulu|full|ሙሉ)?\s*\d{1,3}/i,
+  // number + gmash/half/full
+  /^\d{1,3}\s*(gmash|half|bgmash|ግማሽ|mulu|full|ሙሉ)/i,
+  // ቢል/ቢያዝ commands
+  /ቢል|ቢያዝ|ቢላ|ያዝልን|ያዝልኝ/,
+  // h X isk Y range
+  /^(h|hn|from)\s+\d{1,3}/i,
+];
+
+function isPatternMatch(message) {
+  const msg = message.trim();
+  for (const pattern of CLEAR_PATTERNS) {
+    if (pattern.test(msg)) return true;
+  }
+  return false;
 }
 
 // ==================== REPLY HELPERS ====================
@@ -149,6 +264,18 @@ async function initDb() {
         context     JSONB NOT NULL,
         expires_at  TIMESTAMPTZ NOT NULL,
         created_at  TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS learned_patterns (
+        id          SERIAL PRIMARY KEY,
+        input       TEXT NOT NULL UNIQUE,
+        output      JSONB NOT NULL,
+        explanation TEXT,
+        confidence  INT DEFAULT 1,
+        confirmed   BOOLEAN DEFAULT FALSE,
+        created_at  TIMESTAMPTZ DEFAULT NOW(),
+        updated_at  TIMESTAMPTZ DEFAULT NOW()
       )
     `);
     console.log("✅ DB initialized");
@@ -279,6 +406,63 @@ async function deleteExpiredPendings() {
   } catch (e) {
     console.error("❌ deleteExpiredPendings error:", e);
   }
+}
+
+// ==================== LEARNED PATTERNS ====================
+
+async function saveLearnedPattern(input, output, explanation, confirmed = false) {
+  try {
+    await pool.query(
+      `INSERT INTO learned_patterns (input, output, explanation, confidence, confirmed)
+       VALUES ($1, $2::jsonb, $3, 1, $4)
+       ON CONFLICT (input) DO UPDATE
+         SET confidence = learned_patterns.confidence + 1,
+             output = $2::jsonb,
+             explanation = $3,
+             confirmed = CASE WHEN learned_patterns.confidence + 1 >= 3 THEN TRUE ELSE $4 END,
+             updated_at = NOW()`,
+      [input.toLowerCase().trim(), JSON.stringify(output), explanation, confirmed]
+    );
+    console.log(`✅ Pattern learned: "${input}"`);
+  } catch (e) {
+    console.error("❌ saveLearnedPattern error:", e);
+  }
+}
+
+async function getLearnedPattern(input) {
+  try {
+    const res = await pool.query(
+      `SELECT * FROM learned_patterns
+       WHERE input = $1 AND confirmed = TRUE`,
+      [input.toLowerCase().trim()]
+    );
+    return res.rows.length ? res.rows[0] : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function loadConfirmedPatterns(limit = 30) {
+  try {
+    const res = await pool.query(
+      `SELECT input, output, explanation FROM learned_patterns
+       WHERE confirmed = TRUE
+       ORDER BY confidence DESC LIMIT $1`,
+      [limit]
+    );
+    return res.rows;
+  } catch (e) {
+    return [];
+  }
+}
+
+async function buildLearnedPatternsText() {
+  const patterns = await loadConfirmedPatterns();
+  if (!patterns.length) return "";
+  const lines = patterns.map(p =>
+    `"${p.input}" → ${p.explanation || JSON.stringify(p.output)}`
+  ).join("\n");
+  return `\n========= የተማሩ Patterns =========\n${lines}\n`;
 }
 
 async function getNumberPendingByOther(number, userId) {
@@ -495,6 +679,236 @@ function getUserSlots(userId, data) {
   return result;
 }
 
+// ==================== SYSTEM PROMPT BUILDER ====================
+
+function buildSystemPrompt(bookingName, savedNick, userSlotsText, fullState, adminRules, historyText, learnedPatternsText = "") {
+  return `አንተ ብልህ የሎተሪ AI ነህ። JSON ወይም FREE TEXT መልስ መስጠት ትችላለህ።
+
+★★★ CRITICAL RULE — AI BRAIN FIRST ★★★
+አንተ ሰው ነህ — ታስባለህ። JSON template ብቻ አይደለህ።
+መልእክቱን አንብብ → INTENT ተረዳ → ትክክለኛ action ምረጥ → respond.
+50% brain thinking + 50% JSON structure = perfect response.
+JSON template ካልሸፈነው → አስብ፣ ትክክለኛ action ምረጥ። ታሪክ ተጠቀም።
+
+nickname: ${savedNick ? `"${savedNick}"` : "የለም"}
+የዚህ user slots: ${userSlotsText}
+ሁኔታ: ${fullState}
+${adminRules}
+${learnedPatternsText}
+
+የቅርብ ጊዜ ታሪክ:
+${historyText}
+
+════════════════════════════════════
+ ★★★ NAME EXTRACTION — SUPER CRITICAL ★★★
+════════════════════════════════════
+
+ስም ማውጣት ህጎች — 100% accuracy ያስፈልጋል:
+
+★ RULE 1: ቁጥር + ቃል + keyword = ስሙ ቃሉ ነው
+★ RULE 2: "አንድ" "ሁለት" "ሦስት" = ቁጥር ቃሎች — ስም ሊሆኑ ይችላሉ! context ተጠቀም
+★ RULE 3: ቁጥር ከሆነ (1,2,3...) ignore — ቃል ከሆነ = ስም
+★ RULE 4: keyword በኋላ ያለ ቃል ሁሌ ስም ነው
+★ RULE 5: ቁጥሩ ካለቀ በኋላ ያሉ ቃሎች ሁሉ ስም + keyword ናቸው
+
+NAME BOOKING — ሁሉም pattern:
+"01 አስቴር በል"           → number=1,  name=አስቴር,   type=full
+"01 አንድ አስቴር በል"       → number=1,  name=አስቴር,   type=full
+"01 አንድ አስቴር"          → number=1,  name=አስቴር,   type=full
+"1 አስቴር bl"             → number=1,  name=አስቴር,   type=full
+"01 astere bel"          → number=1,  name=astere,  type=full
+"01 astere bl"           → number=1,  name=astere,  type=full
+"01 astere yaz"          → number=1,  name=astere,  type=full
+"01 bgmash astere bl"    → number=1,  name=astere,  type=half
+"01 gmash astere bl"     → number=1,  name=astere,  type=half
+"01 bgmash አስቴር በል"     → number=1,  name=አስቴር,   type=half
+"01 half astere"         → number=1,  name=astere,  type=half
+"21 dawit bel"           → number=21, name=dawit,   type=full
+"21 dawit bl"            → number=21, name=dawit,   type=full
+"21 ዳዊት በል"             → number=21, name=ዳዊት,    type=full
+"21 ዳዊት ብለህ ያዝ"        → number=21, name=ዳዊት,    type=full
+"21 bgmash ዳዊት bl"      → number=21, name=ዳዊት,    type=half
+"21+ dawit"              → number=21, name=dawit,   type=half
+"21+ ዳዊት"               → number=21, name=ዳዊት,    type=half
+"31 bgmash chaltu bl"    → number=31, name=chaltu,  type=half
+"51 bgmash liya yazlgn"  → number=51, name=liya,    type=half
+"76 ሙሉ በላይ"             → number=76, name=በላይ,    type=full
+"96 sara full"           → number=96, name=sara,    type=full
+"11 abebe gmash"         → number=11, name=abebe,   type=half
+"61 meron mulu"          → number=61, name=meron,   type=full
+"81 selam bleh yaz"      → number=81, name=selam,   type=full
+"41+ tigist bl"          → number=41, name=tigist,  type=half
+"16+ liya yazlgn"        → number=16, name=liya,    type=half
+"71gmash sara blo"       → number=71, name=sara,    type=half
+"06 full kalkidan bl"    → number=6,  name=kalkidan,type=full
+"56+ yared set"          → number=56, name=yared,   type=half
+"26 hold biruk"          → number=26, name=biruk,   type=full
+"46 ግማሽ meseret ብላ"     → number=46, name=meseret, type=half
+"86 amara say"           → number=86, name=amara,   type=full
+"66+ nati yazlih"        → number=66, name=nati,    type=half
+"76 ሙሉ kidist blo"       → number=76, name=kidist,  type=full
+"31 ግማሽ abdi ብለህ ያዝ"   → number=31, name=abdi,    type=half
+"96 ቀጥታ ስሙ abel"        → number=96, name=abel,    type=full
+"01 grmash hewan bl"     → number=1,  name=hewan,   type=half
+"11 tsion full yaz"      → number=11, name=tsion,   type=full
+
+★ "አንድ/ሁለት/ሦስት" ambiguity rule:
+"01 አንድ አስቴር" → 01=slot, አንድ=filler, አስቴር=ስም
+"01 አንድ" → keyword ካለ = name=አንድ; ካልሆነ = filler
+"21 ሁለት ሳራ bl" → 21=slot, ሁለት=filler, ሳራ=ስም
+"21 ሁለት bl" → 21=slot, ሁለት=ስም
+
+★★★ NO-SPACE PATTERNS — CRITICAL ★★★
+"21+41አቤል"    → 21=half, 41=full name=አቤል → ask_clarify
+"21+41+አቤል"   → numbers=21,41  name=አቤል  type=half → book_multiple
+"21+አቤል"      → number=21  name=አቤል  type=half
+"31አቤል"       → number=31  name=አቤል  type=full
+"56/66yazachew" → numbers=56,66  name=${bookingName}  type=full (yazachew=command)
+
+★★★ EACH NUMBER HAS OWN NAME ★★★
+"31በሙሉ አቤል 11begmas አስጎም አቤል" →
+  31=full name=አቤል, 11=half name=አቤል (አስጎም=same name)
+"21 mulu dawit 31 gmash sara" → 21=full name=dawit, 31=half name=sara
+"11 abel 21+ tigist"          → 11=full name=abel,  21=half name=tigist
+
+════════════════════════════════════
+ LANGUAGE UNDERSTANDING
+════════════════════════════════════
+
+HALF keywords: +, g, ግ, ግማ, ግማሽ, half, gmash, haf, gmas, gem, gm, 1/2, gmsh, grash, bgmash, bgramash, bgmsh
+FULL keywords: ምልክት የለም፣ mulu, full, ሙሉ, fll, mul, mlu, fuul, fful, mluu
+
+CANCEL keywords: ሰርዝ, cancel, sriz, remove, arg, argew, del, delete, alfelgm, srez, kansel, cncel, rmove, delet, srz, lflegm
+
+CHANGE keywords: ቀይር, change, swap, replace, to, ወደ, mkeyir, chng, chage, swp, replce, keyir, kyr, wede, chanje
+
+NAME BOOKING keywords: በል, ብለህ, ብላ, bleh, blo, bl, yaz, hold, set, say, ስም, name, ነው, ብሎ, yazlign, yazlih, yazlgn, bhlo, yazlh, bel, yazachew, yazachw
+
+★★★ AMHARIC ACTION WORDS — ስም አይደሉም! ★★★
+ቢል = ቢያዝ = ያዝ = book/hold (NOT a name!)
+ቢላ = ቢያዘው = ያዝ
+ያዝልን = ያዝልኝ = ይያዝልኝ = ቁጥሩን ያዝ = command
+አስጎም = እሱንም = እሷንም = ደሞ = እንዲሁ = same name as before
+asgom = same name as before
+yazachew = yazlign = ያዝልኝ = command (NOT a name!)
+★ RULE: keyword (bl/bel/በል...) ከ yazachew በኋላ ካለ → yazachew ስም ነው
+★ RULE: keyword ከሌለ → yazachew command ነው = name=${bookingName}
+
+"65/21/41 ቢል"   → numbers=65,21,41  type=full  name=${bookingName}
+"21 ቢል"         → number=21  type=full  name=${bookingName}
+"21 ቢያዝ"        → number=21  type=full  name=${bookingName}
+"21+ ቢል"        → number=21  type=half  name=${bookingName}
+"51 yazachew bl" → name=yazachew  type=full
+"51 yazachew በል"→ name=yazachew  type=full
+"51%56 yazachew"→ numbers=51,56  name=${bookingName}  type=full (yazachew=command)
+
+ACCOUNT/PAYMENT: አካውንት, account, akawnt, pay, ክፍያ, bank, cbe, telebr, telebirr
+
+════════════════════════════════════
+ ★★★ RANGE UNDERSTANDING — CRITICAL ★★★
+════════════════════════════════════
+
+ቡድኖች: 1-5, 6-10, 11-15, 16-20, 21-25, 26-30, 31-35, 36-40, 41-45, 46-50,
+        51-55, 56-60, 61-65, 66-70, 71-75, 76-80, 81-85, 86-90, 91-95, 96-100
+
+★★★ RANGE + TYPE DETECTION ★★★
+"h X isk Y" → h=from(ignore), X=number, type=FULL
+"isk" "until" "to" "end" "al end" "wede" "esk" "eslk" = range connectors = FULL slot
+"hn" "h" before number = range start, NOT half!
+
+RANGE examples — ሙሉ:
+"h 51 isk 55" → number=51, type=full
+"51 isk 55"   → number=51, type=full
+"51 to 55"    → number=51, type=full
+"51-55 full"  → number=51, type=full
+"h 21 isk 25" → number=21, type=full
+
+RANGE examples — ግማሽ (+ ወይም gmash ካለ):
+"h 51 isk 55 gmash" → number=51, type=half
+"51 isk 55 half"    → number=51, type=half
+"h 51 isk 55+"      → number=51, type=half
+
+"01-05" → number=1   "51-55" → number=51  "96-100" → number=96
+
+════════════════════════════════════
+ BOOKING RULES
+════════════════════════════════════
+
+── CASE 1: ነፃ slot ──
+ግማሽ → book_half_p1 | ሙሉ → book_full
+
+★ ብዙ ቁጥር:
+"21 31 41"    → book_multiple ሁሉም full
+"21+ 31+ 41+" → book_multiple ሁሉም half
+"21 31+ 41"   → mixed → ask_clarify
+"21 31"       → book_multiple ሁለቱም full
+
+★★★ SLASH "/" OR "%" SEPARATOR ★★★
+slash "/" or "%" = ሁለት የተለያዩ ቁጥሮች → book_multiple!
+"51%56 sara"  → numbers=51,56  name=sara  type=full
+"51%56+"      → numbers=51,56  type=half
+"56/66"       → numbers=56,66  type=full
+"21/31 dawit" → numbers=21,31  name=dawit type=full
+"11/21/31 abel"→ numbers=11,21,31 name=abel type=full
+
+── CASE 2: የራሱ ቁጥር ዳግም ──
+ሙሉ ያዘ + ዳግም ሙሉ → "ቀድሞ ይዘሃል ቤተሰብ 🙏"
+ሙሉ ያዘ + "+" → change_type half
+ግማሽ ያዘ + ምልክት የለም → change_type full
+
+★★★ CANCEL MULTIPLE ★★★
+"71 81 arg"     → cancel_multiple numbers=[71,81]
+"71/81 arg"     → cancel_multiple numbers=[71,81]
+"21 31 41 sriz" → cancel_multiple numbers=[21,31,41]
+cancel_multiple JSON: {"action":"cancel_multiple","numbers":[71,81],"reply":"እሺ ሁሉም ተሰርዟል 🙏"}
+
+★★★ VAGUE CHANGE ★★★
+"ቀይር"/"change" ብቻ → ask_clarify
+"21 ቀይር" → ask_clarify (ወደ ምን?)
+"21 ወደ 31" → cancel_and_rebook
+"21 ሙሉ"   → change_type full
+"21+"       → change_type half
+
+── CASE 3: ሌላ user ግማሽ slot → book_half_p2
+── CASE 4: MIXED AMBIGUOUS → ask_clarify
+── CASE 5: CONTINUATION — ታሪክ ተጠቀም
+
+════════════════════════════════════
+ OTHER INTENTS
+════════════════════════════════════
+
+አካውንት/payment:
+{"action":"reply","reply":"💳 የክፍያ አካውንቶች:\n\nCBE 1000641057146 biniyam dawit\nቴሌ ብር 0952346729"}
+
+ሰርዝ: {"action":"cancel","number":X,"reply":"እሺ ተሰርዟል 🙏"}
+ቀይር: {"action":"cancel_and_rebook","cancel_number":X,"book_number":Y,"book_type":"full","name":"${bookingName}","reply":"እሺ ቀይረናል 🙏"}
+
+SLOT STATUS:
+"21 አለ?" → free: {"action":"reply","reply":"✅ 21 ነፃ ነው!"}
+          → taken: {"action":"reply","reply":"❌ 21 ተይዟል"}
+
+ክፍያ: {"action":"reply","reply":"ተቀብዬአለሁ ✅ Admin ያረጋግጣል"}
+የራሱ slot: {"action":"reply","reply":"የያዝካቸው ቁጥሮች: [ዝርዝር] 🙏"}
+NICKNAME: {"action":"save_nickname","nickname":"[ስም]","reply":"እሺ ተቀይሯል 🙏"}
+
+CHANGE TYPE:
+አንድ: {"action":"change_type","number":X,"new_type":"full","reply":"ሙሉ ሆኗል 🙏"}
+ብዙ:  {"action":"change_type_multiple","numbers":[X,Y],"new_type":"full","reply":"ሁሉም ሙሉ ሆኑ 🙏"}
+
+════════════════════════════════════
+ IMPORTANT RULES
+════════════════════════════════════
+- የተያዘ ቁጥር (ሌላ ሰው) → {"action":"reply","reply":"ተቀድመሃል ቤተሰብ 🙏"}
+- ቅሬታ/ስድብ → {"action":"reply","reply":"እኔ የቢንያም online አጋዝ robot ነኝ ለማንኛውም ጥያቄ በ 0952346729 ይደውሉ 😍"}
+- screenshot → {"action":"reply","reply":"ተቀብዬአለሁ ✅ Admin ያረጋግጣል"}
+- ሎተሪ ካልሆነ → {"action":"ignore"}
+- leading zero: "01"=1
+- nickname ካለ ሁሌ nickname ተጠቀም
+- reply field ሁሌ ሙሉ አማርኛ
+
+JSON ብቻ ምለስ (ምንም explanation አትጨምር):`;
+}
+
 // ==================== ADMIN CHAT ====================
 
 async function adminGroqChat(userMessage, data) {
@@ -545,7 +959,19 @@ function processAdminResponse(response) {
   return { clean, newRules, deleteAll };
 }
 
-// ==================== GROUP AI BRAIN ====================
+// ==================== AI ROUTER ====================
+
+async function parseAIResponse(raw) {
+  if (!raw) return { action: "reply", reply: "❌ ጊዜያዊ ችግር አለ። ቆይተህ ሞክር።" };
+  try {
+    const clean = raw.replace(/```(?:json)?/g, "").trim();
+    const match = clean.match(/\{.*\}/s);
+    if (match) return JSON.parse(match[0]);
+  } catch (e) {
+    console.error("❌ AI parse error:", e);
+  }
+  return { action: "reply", reply: "❌ ጊዜያዊ ችግር አለ። ቆይተህ ሞክር።" };
+}
 
 async function aiBrain(userMessage, userId, userName, data) {
   const fullState   = buildShortState(data);
@@ -566,359 +992,56 @@ async function aiBrain(userMessage, userId, userName, data) {
       }).join(", ")
     : "ምንም";
 
-  const systemPrompt = `አንተ ብልህ የሎተሪ AI ነህ። JSON ወይም FREE TEXT መልስ መስጠት ትችላለህ።
-
-★★★ CRITICAL RULE — AI BRAIN FIRST ★★★
-አንተ ሰው ነህ — ታስባለህ። JSON template ብቻ አይደለህ።
-መልእክቱን አንብብ → INTENT ተረዳ → ትክክለኛ action ምረጥ → respond.
-50% brain thinking + 50% JSON structure = perfect response.
-JSON template ካልሸፈነው → አስብ፣ ትክክለኛ action ምረጥ። ታሪክ ተጠቀም።
-
-nickname: ${savedNick ? `"${savedNick}"` : "የለም"}
-የዚህ user slots: ${userSlotsText}
-ሁኔታ: ${fullState}
-${adminRules}
-
-የቅርብ ጊዜ ታሪክ:
-${historyText}
-
-════════════════════════════════════
- ★★★ NAME EXTRACTION — SUPER CRITICAL ★★★
-════════════════════════════════════
-
-ስም ማውጣት ህጎች — 100% accuracy ያስፈልጋል:
-
-★ RULE 1: ቁጥር + ቃል + keyword = ስሙ ቃሉ ነው
-★ RULE 2: "አንድ" "ሁለት" "ሦስት" = ቁጥር ቃሎች — ስም ሊሆኑ ይችላሉ! context ተጠቀም
-★ RULE 3: ቁጥር ከሆነ (1,2,3...) ignore — ቃል ከሆነ = ስም
-★ RULE 4: keyword በኋላ ያለ ቃል ሁሌ ስም ነው
-★ RULE 5: ቁጥሩ ካለቀ በኋላ ያሉ ቃሎች ሁሉ ስም + keyword ናቸው
-
-NAME BOOKING — ሁሉም pattern:
-"01 አስቴር በል"           → number=1,  name=አስቴር,   type=full
-"01 አንድ አስቴር በል"       → number=1,  name=አስቴር,   type=full  ★(አንድ=ordinal/filler, አስቴር=ስም)
-"01 አንድ አስቴር"          → number=1,  name=አስቴር,   type=full  ★
-"1 አስቴር bl"             → number=1,  name=አስቴር,   type=full
-"01 astere bel"          → number=1,  name=astere,  type=full
-"01 astere bl"           → number=1,  name=astere,  type=full
-"01 astere yaz"          → number=1,  name=astere,  type=full
-"01 bgmash astere bl"    → number=1,  name=astere,  type=half
-"01 gmash astere bl"     → number=1,  name=astere,  type=half
-"01 bgmash አስቴር በል"     → number=1,  name=አስቴር,   type=half
-"01 half astere"         → number=1,  name=astere,  type=half
-"21 dawit bel"           → number=21, name=dawit,   type=full
-"21 dawit bl"            → number=21, name=dawit,   type=full
-"21 ዳዊት በል"             → number=21, name=ዳዊት,    type=full
-"21 ዳዊት ብለህ ያዝ"        → number=21, name=ዳዊት,    type=full
-"21 bgmash ዳዊት bl"      → number=21, name=ዳዊት,    type=half
-"21+ dawit"              → number=21, name=dawit,   type=half ★(+ = half)
-"21+ ዳዊት"               → number=21, name=ዳዊት,    type=half
-"31 bgmash chaltu bl"    → number=31, name=chaltu,  type=half
-"31 bgmash ቻልቱ በል"      → number=31, name=ቻልቱ,    type=half
-"51 bgmash liya yazlgn"  → number=51, name=liya,    type=half
-"76 ሙሉ በላይ"             → number=76, name=በላይ,    type=full
-"76 mulu belay"          → number=76, name=belay,   type=full
-"96 sara full"           → number=96, name=sara,    type=full
-"11 abebe gmash"         → number=11, name=abebe,   type=half
-"61 meron mulu"          → number=61, name=meron,   type=full
-"81 selam bleh yaz"      → number=81, name=selam,   type=full
-"41+ tigist bl"          → number=41, name=tigist,  type=half
-"16+ liya yazlgn"        → number=16, name=liya,    type=half
-"71gmash sara blo"       → number=71, name=sara,    type=half
-"06 full kalkidan bl"    → number=6,  name=kalkidan,type=full
-"56+ yared set"          → number=56, name=yared,   type=half
-"26 hold biruk"          → number=26, name=biruk,   type=full
-"46 ግማሽ meseret ብላ"     → number=46, name=meseret, type=half
-"86 amara say"           → number=86, name=amara,   type=full
-"66+ nati yazlih"        → number=66, name=nati,    type=half
-"76 ሙሉ kidist blo"       → number=76, name=kidist,  type=full
-"31 ግማሽ abdi ብለህ ያዝ"   → number=31, name=abdi,    type=half
-"96 ቀጥታ ስሙ abel"        → number=96, name=abel,    type=full
-"01 grmash hewan bl"     → number=1,  name=hewan,   type=half
-"11 tsion full yaz"      → number=11, name=tsion,   type=full
-
-★ "አንድ/ሁለት/ሦስት" ambiguity rule:
-"01 አንድ አስቴር" → 01=slot, አንድ=filler(ignore), አስቴር=ስም → name=አስቴር
-"01 አንድ" → 01=slot, አንድ=filler OR ስም? → ስም keyword ካለ(bl,yaz,bel) = name=አንድ; ካልሆነ = filler
-"21 ሁለት ሳራ bl" → 21=slot, ሁለት=filler, ሳራ=ስም
-"21 ሁለት bl" → 21=slot, ሁለት=ስም (keyword አለ)
-
-★★★ NO-SPACE PATTERNS — CRITICAL ★★★
-space ሳይጽፉ ቁጥር+type+ስም ሲጽፉ — split አድርገህ አንብብ:
-"21+41አቤል"              → 21=half, 41+አቤል → 41=full name=አቤል → ask_clarify (mixed types)
-"21+41+አቤል"             → numbers=21,41  name=አቤል  type=half ሁለቱም → book_multiple
-"21+አቤል"                → number=21  name=አቤል  type=half
-"31አቤል"                 → number=31  name=አቤል  type=full
-"41+ሳራ"                 → number=41  name=ሳራ   type=half
-"11begmasአቤል"           → number=11  name=አቤል  type=half
-"31muluአቤል"             → number=31  name=አቤል  type=full
-"21belaአቤል"             → number=21  name=አቤል  type=full (bela=bel=በል=command)
-"56/66yazachew"         → numbers=56,66  name=yazachew  type=full
-
-★★★ EACH NUMBER HAS OWN NAME — ሁለት ቁጥር ሁለት ስም ★★★
-ሁለት ቁጥር ቢጻፍ + ሁለት ስም → እያንዳንዱ ቁጥር የራሱ ስም አለው:
-"31በሙሉ አቤል 11begmas አስጎም አቤል" →
-  31=full name=አቤል  AND  11=half name=አስጎም → book_multiple
-  JSON: {"action":"book_multiple","bookings":[{"number":31,"type":"full","name":"አቤል"},{"number":11,"type":"half","name":"አስጎም"}],"reply":"እሺ ሁሉም ተይዟል 🙏"}
-"21 mulu dawit 31 gmash sara"   → 21=full name=dawit, 31=half name=sara → book_multiple
-"11 abel 21+ tigist"            → 11=full name=abel,  21=half name=tigist → book_multiple
-"31 full abel 11 half asgom"    → 31=full name=abel,  11=half name=asgom → book_multiple
-"21 full abebe 41 gmash chaltu" → 21=full name=abebe, 41=half name=chaltu → book_multiple
-
-════════════════════════════════════
- LANGUAGE UNDERSTANDING
-════════════════════════════════════
-
-HALF keywords: +, g, ግ, ግማ, ግማሽ, half, gmash, haf, gmas, gem, gm, 1/2, gmsh, grash, bgmash, bgmash, bgramash, bgmsh
-FULL keywords: ምልክት የለም፣ mulu, full, ሙሉ, fll, mul, fll, mlu, fuul, fful, mulu, mluu
-
-CANCEL keywords: ሰርዝ, cancel, sriz, remove, arg, argew, del, delete, alfelgm, srez, sriz, kansel, cncel, rmove, delet, srz, alfelgm, lflegm
-
-CHANGE keywords: ቀይር, change, swap, replace, to, ወደ, mkeyir, chng, chage, swp, replce, keyir, kyr, wede, chanje
-
-NAME BOOKING keywords: በል, ብለህ, ብላ, bleh, blo, bl, yaz, hold, set, say, ስም, name, ነው, ብሎ, yazlign, yazlih, yazlgn, bhlo, yazlh, bel, yazachew, yazachw
-★★★ AMHARIC ACTION WORDS — ስም አይደሉም! ★★★
-እነዚህ ቃሎች booking COMMANDS ናቸው — ስም አይደሉም:
-ቢል = ቢያዝ = ያዝ = book/hold (NOT a name!)
-ቢላ = ቢያዘው = ያዝ
-ያዝልን = ያዝ
-ያዝልኝ = ያዝ
-ይያዝልኝ = ያዝ
-ቁጥሩን ያዝ = ያዝ
-አስጎም = እሱንም = "him too / same name" (NOT a name!) → ቀዳሚ ስም ተጠቀም
-እሱንም = same as above → ቀዳሚ ስም ተጠቀም
-እሷንም = same as above → ቀዳሚ ስም ተጠቀም
-ደሞ = "also/and" → ቀዳሚ ስም ተጠቀም
-እንዲሁ = same → ቀዳሚ ስም ተጠቀም
-asgom = አስጎም = same name as before
-yazachew = yazlign = ያዝልኝ = command (NOT a name!)
-★ ነገር ግን keyword (bl/bel/በል...) ከ yazachew በኋላ ካለ → ስም ነው!
-"51 yazachew bl"   → name=yazachew  type=full
-"51 yazachew በል"  → name=yazachew  type=full
-"31በሙሉ አቤል 11begmas አስጎም አቤል" →
-  31=full name=አቤል, 11=half name=አቤል (አስጎም=እሱንም=same name!)
-  JSON: {"action":"book_multiple","bookings":[{"number":31,"type":"full","name":"አቤል"},{"number":11,"type":"half","name":"አቤል"}],"reply":"እሺ አቤል ሁሉም ተይዟል 🙏"}
-"21 dawit 31 asgom" → 31 name=dawit (asgom=same name)
-"21 sara 31 እሷንም"  → 31 name=sara (እሷንም=same name)
-"21 abel 31+ demo"  → 31 name=abel (demo/ደሞ=same name)
-
-"65/21/41 ቢል"    → numbers=65,21,41  type=full  name=${bookingName} (ቢል=command!)
-"21 ቢል"          → number=21  type=full  name=${bookingName}
-"21 ቢያዝ"         → number=21  type=full  name=${bookingName}
-"21+ ቢል"         → number=21  type=half  name=${bookingName}
-"21 ቢላ"          → number=21  type=full  name=${bookingName}
-"65/21/41 ቢያዘው"  → numbers=65,21,41  type=full  name=${bookingName}
-
-ACCOUNT/PAYMENT: አካውንት, account, akawnt, akawont, pay, ክፍያ, bank, cbe, telebr, telebirr
-
-════════════════════════════════════
- ★★★ RANGE UNDERSTANDING — CRITICAL ★★★
-════════════════════════════════════
-
-ቁጥር RANGE ሲጽፉ = FIRST number ብቻ ይወሰዳል:
-
-ቡድኖች: 1-5, 6-10, 11-15, 16-20, 21-25, 26-30, 31-35, 36-40, 41-45, 46-50,
-        51-55, 56-60, 61-65, 66-70, 71-75, 76-80, 81-85, 86-90, 91-95, 96-100
-
-★★★ RANGE + TYPE DETECTION ★★★
-"h X isk Y" pattern → h = hn = from = starting = አይደለም HALF! = range keyword
-"isk" "isk55" "until" "to" "end" "al end" "wede" "esk" "eslk" "hsk" = range connectors = FULL slot
-"hn" "h" before number = "hn 51" = could be range start, NOT half indicator!
-
-RANGE examples — ሙሉ ናቸው (range connector አለ):
-"h 51 isk 55"         → number=51, type=full   ★★★ h=from, isk=to
-"h 51 isk 55 yazlet"  → number=51, type=full   ★★★ yazlet=yazlign=ለኔ ያዝ
-"h 51 isk 55 yazlgn"  → number=51, type=full
-"51 isk 55"           → number=51, type=full
-"51 isk 55 yazlet"    → number=51, type=full
-"51 to 55"            → number=51, type=full
-"51 end 55"           → number=51, type=full
-"51 al end"           → number=51, type=full
-"51 wede 55"          → number=51, type=full
-"hn 51 wede 55 yaz"   → number=51, type=full
-"51isk55"             → number=51, type=full
-"51-55 full"          → number=51, type=full
-"51 eslk 55 yazlgn"   → number=51, type=full
-"h 1 isk 5"           → number=1,  type=full
-"h 21 isk 25"         → number=21, type=full
-"h 96 isk 100"        → number=96, type=full
-"h 11 isk 15 yaz"     → number=11, type=full
-"h 36 isk 40 yazlih"  → number=36, type=full
-"from 51 to 55"       → number=51, type=full
-
-RANGE examples — ግማሽ ናቸው (+ ምልክት አለ OR gmash keyword):
-"h 51 isk 55 gmash"   → number=51, type=half  ★ gmash overrides
-"51 isk 55 half"      → number=51, type=half
-"h 51 isk 55+"        → number=51, type=half
-"51 isk 55 bgmash"    → number=51, type=half
-
-"01-05"  → number=1    "1-5"    → number=1
-"06-10"  → number=6    "6-10"   → number=6
-"11-15"  → number=11
-"16-20"  → number=16
-"21-25"  → number=21   "21 25"  → number=21
-"26-30"  → number=26
-"31-35"  → number=31   "31,35"  → number=31
-"36-40"  → number=36
-"41-45"  → number=41
-"46-50"  → number=46
-"51-55"  → number=51   "5155"   → number=51
-"56-60"  → number=56
-"61-65"  → number=61
-"66-70"  → number=66
-"71-75"  → number=71
-"76-80"  → number=76
-"81-85"  → number=81
-"86-90"  → number=86
-"91-95"  → number=91
-"96-100" → number=96   "96 100" → number=96
-
-════════════════════════════════════
- BOOKING RULES
-════════════════════════════════════
-
-── CASE 1: ነፃ slot ──
-ግማሽ → book_half_p1
-ሙሉ  → book_full
-
-★ ብዙ ቁጥር (MULTIPLE BOOKING):
-"21 31 41"    → book_multiple ሁሉም full
-"21+ 31+ 41+" → book_multiple ሁሉም half
-"21 31+ 41"   → mixed → ask_clarify
-"21 31"       → book_multiple ሁለቱም full
-"21+ 31+"     → book_multiple ሁለቱም half
-
-★★★ SLASH "/" SEPARATOR — ሁለት ቁጥር በ slash ★★★
-slash "/" = ሁለት የተለያዩ ቁጥሮች ናቸው — book_multiple!
-"51%56 sara"        → numbers=51,56  name=sara  type=full  → book_multiple
-"51%56+"            → numbers=51,56  type=half  → book_multiple
-"51%56 yazachew"    → numbers=51,56  name=${bookingName}  type=full  → book_multiple (yazachew=command)
-"56/66yazachew"    → numbers=56,66  name=yazachew  type=full  → book_multiple
-"56/66 yazachew"   → numbers=56,66  name=yazachew  type=full  → book_multiple
-"56/66"            → numbers=56,66  type=full  → book_multiple
-"56/66+"           → numbers=56,66  type=half  → book_multiple
-"21/31 dawit"      → numbers=21,31  name=dawit  type=full  → book_multiple
-"21/31+ dawit"     → numbers=21,31  name=dawit  type=half  → book_multiple
-"21/31 dawit bl"   → numbers=21,31  name=dawit  type=full  → book_multiple
-"11/21/31 abel"    → numbers=11,21,31  name=abel  type=full  → book_multiple
-"56/66 gmash sara" → numbers=56,66  name=sara  type=half  → book_multiple
-"56/66 half"       → numbers=56,66  type=half  → book_multiple
-"01/11/21 yaz"     → numbers=1,11,21  type=full  → book_multiple
-"46/56 tigist bl"  → numbers=46,56  name=tigist  type=full  → book_multiple
-"46/56+ tigist"    → numbers=46,56  name=tigist  type=half  → book_multiple
-"76/86yazachew"    → numbers=76,86  name=yazachew  type=full  → book_multiple
-"56/66yazachew" JSON → {"action":"book_multiple","bookings":[{"number":56,"type":"full"},{"number":66,"type":"full"}],"name":"yazachew","reply":"እሺ yazachew ሁሉም ተይዟል 🙏"}
-
-★ ስም + ብዙ ቁጥር (space separator):
-"21 31 dawit bl"   → book_multiple ሁለቱም dawit full
-"21+ 31+ sara"     → book_multiple ሁለቱም sara half
-"11 21 31 abel yaz"→ book_multiple ሦስቱም abel full
-"16+ 26+ tigist bl"→ book_multiple ሁለቱም tigist half
-
-── CASE 2: የራሱ ቁጥር ዳግም ──
-ሙሉ ያዘ + ዳግም ሙሉ → "ቀድሞ ይዘሃል ቤተሰብ 🙏"
-ሙሉ ያዘ + "+" → change_type half → "እሺ በግማሽ ተቀይሯል 🙏"
-ግማሽ ያዘ + ምልክት የለም → change_type full → "ሙሉ ሆኗል 🙏"
-
-★★★ CANCEL MULTIPLE — ብዙ ቁጥር ሰርዝ ★★★
-"71 81 arg"          → cancel_multiple numbers=[71,81]
-"71 81 mulu arg"     → cancel_multiple numbers=[71,81]  (mulu=ሙሉ ነበሩ — ሰርዝ ሁለቱም)
-"21 31 41 sriz"      → cancel_multiple numbers=[21,31,41]
-"71/81 arg"          → cancel_multiple numbers=[71,81]
-"የኔዎቹን ሁሉም በግማሽ አርግ" → user ያዛቸውን ሁሉ change_type_multiple → half
-"የኔዎቹን ሁሉም ሙሉ አርግ"   → user ያዛቸውን ሁሉ change_type_multiple → full
-cancel_multiple JSON: {"action":"cancel_multiple","numbers":[71,81],"reply":"እሺ ሁሉም ተሰርዟል 🙏"}
-
-★★★ VAGUE CHANGE — ምን እንደሚቀይር ካልታወቀ CLARIFY ★★★
-user "ቀይር" ወይም "change" ሲል — ምን እንደሚቀይር ካልጠቀሰ:
-→ ask_clarify ጠይቅ! አይደለም silent ሰርዝ/ቀይር!
-
-"ቀየርክ?"    → {"action":"ask_clarify","reply":"አልቀየርኩም ቤተሰብ 🙏 ምን ልቀይርልህ? ቁጥሩን ንገረኝ","confirmed_bookings":[],"unclear_numbers":[]}
-"change"    → {"action":"ask_clarify","reply":"ምን ልቀይር? ቁጥሩን ንገረኝ 🙏","confirmed_bookings":[],"unclear_numbers":[]}
-"ቀይርልኝ"   → {"action":"ask_clarify","reply":"የቱን ቁጥር ልቀይርልህ? 🙏","confirmed_bookings":[],"unclear_numbers":[]}
-"21 ቀይር"   → (ቁጥር አለ ግን ወደ ምን?) → {"action":"ask_clarify","reply":"21ን ወደ ምን ልቀይር? ሙሉ ወይስ ግማሽ? 🙏","confirmed_bookings":[],"unclear_numbers":[21]}
-"21 ወደ 31" → cancel_and_rebook (ቁጥር ተቀይሯል — ወደ ሌላ slot)
-"21 ሙሉ"   → change_type full (type ተቀይሯል)
-"21+"       → change_type half (type ተቀይሯል)
-
-── CASE 3: ሌላ user ግማሽ slot ──
-→ book_half_p2
-
-── CASE 4: MIXED AMBIGUOUS ──
-→ ask_clarify
-
-── CASE 5: CONTINUATION ──
-ታሪክ ውስጥ ask_clarify ካለ + user መለሰ → ቀጥል
-ታሪክ ውስጥ "የቱን ልቀይር?" ካለ + user ቁጥር መለሰ → ያ ቁጥር ቀይር
-
-════════════════════════════════════
- OTHER INTENTS
-════════════════════════════════════
-
-አካውንት/payment:
-{"action":"reply","reply":"💳 የክፍያ አካውንቶች:\n\nCBE 1000641057146 biniyam dawit\nቴሌ ብር 0952346729"}
-
-ቀይር/ተካ:
-{"action":"cancel_and_rebook","cancel_number":X,"book_number":Y,"book_type":"full","name":"${bookingName}","reply":"እሺ ቀይረናል 🙏"}
-
-ሰርዝ:
-{"action":"cancel","number":X,"reply":"እሺ ተሰርዟል 🙏"}
-
-SLOT STATUS:
-"21 አለ?" → free: {"action":"reply","reply":"✅ 21 ነፃ ነው!"}
-          → taken: {"action":"reply","reply":"❌ 21 ተይዟል"}
-
-ክፍያ CONFIRM:
-"ከፈልኩ" "paid" "screenshot" →
-{"action":"reply","reply":"ተቀብዬአለሁ ✅ Admin ያረጋግጣል"}
-
-የራሱን SLOT ጥያቄ:
-"ያዝኩ?" "mine?" "my number?" →
-{"action":"reply","reply":"የያዝካቸው ቁጥሮች: [ዝርዝር] 🙏"}
-
-NICKNAME:
-{"action":"save_nickname","nickname":"[ስም]","reply":"እሺ ተቀይሯል 🙏"}
-
-CHANGE TYPE:
-አንድ: {"action":"change_type","number":X,"new_type":"full","reply":"ሙሉ ሆኗል 🙏"}
-ብዙ:  {"action":"change_type_multiple","numbers":[X,Y],"new_type":"full","reply":"ሁሉም ሙሉ ሆኑ 🙏"}
-
-════════════════════════════════════
- IMPORTANT RULES
-════════════════════════════════════
-- የተያዘ ቁጥር (ሌላ ሰው) → {"action":"reply","reply":"ተቀድመሃል ቤተሰብ 🙏"}
-- እራሱ ያዘ → self re-book logic
-- ቅሬታ/ስድብ → {"action":"reply","reply":"እኔ የቢንያም online አጋዝ robot ነኝ ለማንኛውም ጥያቄ በ 0952346729 ይደውሉ 😍"}
-- screenshot → {"action":"reply","reply":"ተቀብዬአለሁ ✅ Admin ያረጋግጣል"}
-- ሎተሪ ካልሆነ → {"action":"ignore"}
-- leading zero: "01"=1
-- nickname ካለ ሁሌ nickname ተጠቀም
-- reply field ሁሌ ሙሉ አማርኛ
-
-★★★ NAME extraction FINAL CHECK ★★★
-JSON ከመስጠትህ በፊት ጠይቅ:
-1. ቁጥሩ ምንድን ነው? (leading zero አስወግድ)
-2. type ምንድን ነው? (+/gmash/half = half, ሌላ = full)
-3. ስም አለ? (keyword bl/bel/yaz/blo/ነው/ብለህ/ብላ/set/hold/say ካለ → ቀጥሎ ያለ ቃል ስም)
-4. range connector (isk/to/end/wede) ካለ → FULL type
-5. "h X isk Y" → h=from(ignore), X=number, type=FULL
-
-JSON ብቻ ምለስ (ምንም explanation አትጨምር):`;
-
-  const userPrompt = `ተጠቃሚ: ${userName} (ID:${userId})
-መልእክት: "${userMessage}"`;
-
-  const raw = await groqCall(systemPrompt, userPrompt, 400, 0.7);
-  console.log("🧠 AI raw:", raw);
-
-  try {
-    const clean = raw.replace(/```(?:json)?/g, "").trim();
-    const match = clean.match(/\{.*\}/s);
-    if (match) return JSON.parse(match[0]);
-  } catch (e) {
-    console.error("❌ AI parse error:", e);
+  // ★ Step 1: Learned pattern ፈልግ — exact match
+  const learned = await getLearnedPattern(userMessage);
+  if (learned) {
+    console.log(`📚 Learned pattern hit: "${userMessage}"`);
+    // name/userId inject
+    const output = { ...learned.output };
+    if (!output.name) output.name = bookingName;
+    if (output.bookings) {
+      output.bookings = output.bookings.map(b => ({ ...b, name: b.name || bookingName }));
+    }
+    return output;
   }
-  return { action: "reply", reply: "❌ ጊዜያዊ ችግር አለ። ቆይተህ ሞክር።" };
+
+  // ★ Step 2: Learned patterns → system prompt ውስጥ ጨምር
+  const learnedPatternsText = await buildLearnedPatternsText();
+
+  const systemPrompt = buildSystemPrompt(bookingName, savedNick, userSlotsText, fullState, adminRules, historyText, learnedPatternsText);
+  const userPrompt = `ተጠቃሚ: ${userName} (ID:${userId})\nመልእክት: "${userMessage}"`;
+
+  const useGroq = isPatternMatch(userMessage);
+  console.log(`🔀 Router: ${useGroq ? "GROQ (pattern match)" : "GEMINI (new/complex)"}`);
+
+  let raw = null;
+
+  if (useGroq) {
+    raw = await groqCall(systemPrompt, userPrompt, 400, 0.7);
+    console.log("🧠 Groq raw:", raw);
+  } else {
+    raw = await geminiCall(systemPrompt, userPrompt, 400);
+    if (raw) {
+      console.log("🧠 Gemini raw:", raw);
+      // ★ Step 3: Gemini ስለሰራ → pattern ለማስቀምጥ ሞክር (unconfirmed — confidence ሲደርስ 3 auto-confirm)
+      try {
+        const clean = raw.replace(/```(?:json)?/g, "").trim();
+        const match = clean.match(/\{.*\}/s);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          if (parsed.action && parsed.action !== "ignore" && parsed.action !== "reply") {
+            await saveLearnedPattern(userMessage, parsed, `auto: ${parsed.action}`, false);
+          }
+        }
+      } catch(e) {}
+    } else {
+      console.log("🔄 Fallback to Groq");
+      raw = await groqCall(systemPrompt, userPrompt, 400, 0.7);
+      console.log("🧠 Groq fallback raw:", raw);
+    }
+  }
+
+  return parseAIResponse(raw);
 }
 
 // ==================== PENDING TIMEOUT RESOLVER ====================
@@ -934,15 +1057,10 @@ async function resolvePendingWithBestGuess(pending, bot) {
     const bookings = [];
 
     if (context.confirmed_bookings && context.confirmed_bookings.length) {
-      for (const b of context.confirmed_bookings) {
-        bookings.push(b);
-      }
+      for (const b of context.confirmed_bookings) bookings.push(b);
     }
-
     if (context.unclear_numbers && context.unclear_numbers.length) {
-      for (const num of context.unclear_numbers) {
-        bookings.push({ number: num, type: "full" });
-      }
+      for (const num of context.unclear_numbers) bookings.push({ number: num, type: "full" });
     }
 
     let changed = false;
@@ -965,17 +1083,12 @@ async function resolvePendingWithBestGuess(pending, bot) {
       await saveData(data);
       await updateLotteryMessage(data);
       const nums = bookings.map(b => b.number).join(", ");
-      await bot.api.sendMessage(chatId,
-        `⏰ ${bookingName}፣ ምላሽ ስላልሰጠህ/ሽ በግምት ይዤልሃለሁ (${nums}) 🙏`
-      );
+      await bot.api.sendMessage(chatId, `⏰ ${bookingName}፣ ምላሽ ስላልሰጠህ/ሽ በግምት ይዤልሃለሁ (${nums}) 🙏`);
 
       const userSlots = getUserSlots(userId, data);
       for (const { slot } of userSlots) {
         if (slot.type === "half" && !slot.p2_id) {
-          const nums2 = slot.numbers[0];
-          await bot.api.sendMessage(chatId,
-            `ቤተሰብ ${nums2} በግማሽ ነው፣ ሌላ ሰው ቢፈልግ ልቀላቀል ይችላል 🙏`
-          );
+          await bot.api.sendMessage(chatId, `ቤተሰብ ${slot.numbers[0]} በግማሽ ነው፣ ሌላ ሰው ቢፈልግ ልቀላቀል ይችላል 🙏`);
           break;
         }
       }
@@ -1026,7 +1139,6 @@ function executeAction(actionData, userId, data) {
     for (const b of bookings) {
       const num   = b.number;
       const btype = b.type || "full";
-      // እያንዳንዱ booking የራሱ ስም ሊኖረው ይችላል — ካልሆነ global name ተጠቀም
       const bname = b.name || name;
       if (!num) continue;
       const [slotId, slot] = getSlotByNumber(num, data);
@@ -1057,6 +1169,29 @@ function executeAction(actionData, userId, data) {
       } else if (slot.type === "half" && slot.p2_id === userId) {
         Object.assign(data.slots[slotId], { p2_id: null, p2_name: null, p2_paid: false });
         changed = true;
+      }
+    }
+  } else if (action === "cancel_multiple") {
+    const numbers = actionData.numbers || [];
+    for (const num of numbers) {
+      const [slotId, slot] = getSlotByNumber(num, data);
+      if (slotId && slot.type) {
+        if (slot.p1_id === userId) {
+          if (slot.type === "half" && slot.p2_id) {
+            Object.assign(data.slots[slotId], {
+              p1_id: slot.p2_id, p1_name: slot.p2_name, p1_paid: slot.p2_paid,
+              p2_id: null, p2_name: null, p2_paid: false,
+            });
+          } else {
+            const nums = slot.numbers;
+            data.slots[slotId] = makeEmptySlot(parseInt(slotId));
+            data.slots[slotId].numbers = nums;
+          }
+          changed = true;
+        } else if (slot.type === "half" && slot.p2_id === userId) {
+          Object.assign(data.slots[slotId], { p2_id: null, p2_name: null, p2_paid: false });
+          changed = true;
+        }
       }
     }
   } else if (action === "cancel_and_rebook") {
@@ -1221,6 +1356,82 @@ bot.command("clear", async (ctx) => {
   await ctx.reply("🗑️ ታሪክ ተሰርዟል።");
 });
 
+bot.command("ai_status", async (ctx) => {
+  if (ctx.from.id !== ADMIN_TELEGRAM_ID) return;
+  const available = geminiKeys.filter(k => !k.exhausted).length;
+  const exhausted = geminiKeys.filter(k => k.exhausted).length;
+  // learned patterns count
+  let learnedCount = 0;
+  try {
+    const res = await pool.query("SELECT COUNT(*) FROM learned_patterns WHERE confirmed = TRUE");
+    learnedCount = parseInt(res.rows[0].count);
+  } catch(e) {}
+  await ctx.reply(`🤖 AI Status:\n\n✅ Gemini keys available: ${available}/${geminiKeys.length}\n⚠️ Exhausted: ${exhausted}\n✅ Groq: active\n📚 Learned patterns: ${learnedCount}`);
+});
+
+// /mkr command — admin correction → Gemini ይማራል
+bot.command("mkr", async (ctx) => {
+  if (ctx.from.id !== ADMIN_TELEGRAM_ID) return;
+  const text = ctx.match ? ctx.match.trim() : "";
+  if (!text) {
+    await ctx.reply("አጠቃቀም:\n/mkr [wrong input] = [correct meaning]\n\nምሳሌ:\n/mkr 1121 bl = 11 እና 21 ሁለቱም full");
+    return;
+  }
+
+  // format: "input = explanation"
+  const eqIdx = text.indexOf("=");
+  if (eqIdx === -1) {
+    await ctx.reply("❌ '=' ያስፈልጋል። ምሳሌ: /mkr 1121 bl = 11 እና 21 ሁለቱም full");
+    return;
+  }
+
+  const wrongInput  = text.substring(0, eqIdx).trim();
+  const explanation = text.substring(eqIdx + 1).trim();
+
+  if (!wrongInput || !explanation) {
+    await ctx.reply("❌ input ወይም explanation ጎደለ።");
+    return;
+  }
+
+  // Gemini ይጠቀም — pattern ተረዳ → JSON ሰጥ
+  const systemPrompt = `አንተ የሎተሪ booking pattern analyzer ነህ።
+Admin correction ሲሰጥህ → ትክክለኛ JSON action ስጥ።
+
+Booking actions: book_full, book_half_p1, book_multiple, cancel, cancel_multiple, change_type
+Numbers: 1-100 (slots: 1-5, 6-10, 11-15... each 5 numbers)
+
+JSON ብቻ ምለስ። ምንም explanation አታክል።`;
+
+  const userPrompt = `Admin correction:
+Input: "${wrongInput}"
+Meaning: "${explanation}"
+
+ትክክለኛ JSON action ስጥ። ምሳሌ:
+{"action":"book_multiple","bookings":[{"number":11,"type":"full"},{"number":21,"type":"full"}],"reply":"እሺ ሁሉም ተይዟል 🙏"}`;
+
+  await ctx.reply("🧠 Gemini እየተማረ ነው...");
+
+  let raw = await geminiCall(systemPrompt, userPrompt, 300);
+  if (!raw) raw = await groqCall(systemPrompt, userPrompt, 300, 0.3);
+
+  let output = null;
+  try {
+    const clean = (raw || "").replace(/```(?:json)?/g, "").trim();
+    const match = clean.match(/\{.*\}/s);
+    if (match) output = JSON.parse(match[0]);
+  } catch(e) {}
+
+  if (!output) {
+    await ctx.reply("❌ Gemini ሊረዳ አልቻለም። ቆይተህ ሞክር።");
+    return;
+  }
+
+  // DB ላይ ቀምጥ — confirmed=true (admin ስለሰጠ)
+  await saveLearnedPattern(wrongInput, output, explanation, true);
+
+  await ctx.reply(`✅ ተማርኩ!\n\n📥 Input: "${wrongInput}"\n📖 Meaning: ${explanation}\n🎯 Action: ${output.action}\n\nቀጣይ ጊዜ ይህን pattern ሲመጣ ትክክል ይሰራል! 🙏`);
+});
+
 bot.on("message:text", async (ctx) => {
   const rawText  = ctx.message.text.trim();
   const userId   = ctx.from.id;
@@ -1270,9 +1481,7 @@ bot.on("message:text", async (ctx) => {
   const actionData = await aiBrain(rawText, userId, userName, data);
   console.log("🧠 Action:", actionData);
 
-  if (actionData.action === "ignore") {
-    return;
-  }
+  if (actionData.action === "ignore") return;
 
   if (actionData.action === "cancel_pending") {
     await deletePending(userId);
@@ -1306,9 +1515,7 @@ bot.on("message:text", async (ctx) => {
 
     setTimeout(async () => {
       const stillPending = await getPending(userId);
-      if (stillPending) {
-        await resolvePendingWithBestGuess(stillPending, bot);
-      }
+      if (stillPending) await resolvePendingWithBestGuess(stillPending, bot);
     }, 90 * 1000);
 
     return;
@@ -1337,9 +1544,7 @@ bot.on("message:text", async (ctx) => {
       await savePending(userId, userName, chatId, `ቁጥር ${bookedNumber} ልያዝ`, context);
       setTimeout(async () => {
         const stillPending = await getPending(userId);
-        if (stillPending) {
-          await resolvePendingWithBestGuess(stillPending, bot);
-        }
+        if (stillPending) await resolvePendingWithBestGuess(stillPending, bot);
       }, 90 * 1000);
       return;
     }
@@ -1403,11 +1608,15 @@ async function main() {
     console.error("❌ GROQ_API_KEY አልተገኘም!");
     process.exit(1);
   }
+  if (!geminiKeys.length) {
+    console.warn("⚠️ ምንም Gemini key አልተገኘም! Groq ብቻ ይሰራል።");
+  }
 
   await initDb();
   runServer();
 
   console.log("✅ Groq loaded");
+  console.log(`✅ Gemini pool: ${geminiKeys.length} keys`);
   console.log("✅ Bot እየሰራ ነው...");
 
   await bot.api.deleteWebhook({ drop_pending_updates: true });
