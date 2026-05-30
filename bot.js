@@ -643,6 +643,28 @@ NAME BOOKING — ሁሉም pattern:
 "21 ሁለት ሳራ bl" → 21=slot, ሁለት=filler, ሳራ=ስም
 "21 ሁለት bl" → 21=slot, ሁለት=ስም (keyword አለ)
 
+★★★ NO-SPACE PATTERNS — CRITICAL ★★★
+space ሳይጽፉ ቁጥር+type+ስም ሲጽፉ — split አድርገህ አንብብ:
+"21+41አቤል"              → 21=half, 41+አቤል → 41=full name=አቤል → ask_clarify (mixed types)
+"21+41+አቤል"             → numbers=21,41  name=አቤል  type=half ሁለቱም → book_multiple
+"21+አቤል"                → number=21  name=አቤል  type=half
+"31አቤል"                 → number=31  name=አቤል  type=full
+"41+ሳራ"                 → number=41  name=ሳራ   type=half
+"11begmasአቤል"           → number=11  name=አቤል  type=half
+"31muluአቤል"             → number=31  name=አቤል  type=full
+"21belaአቤል"             → number=21  name=አቤል  type=full (bela=bel=በል=command)
+"56/66yazachew"         → numbers=56,66  name=yazachew  type=full
+
+★★★ EACH NUMBER HAS OWN NAME — ሁለት ቁጥር ሁለት ስም ★★★
+ሁለት ቁጥር ቢጻፍ + ሁለት ስም → እያንዳንዱ ቁጥር የራሱ ስም አለው:
+"31በሙሉ አቤል 11begmas አስጎም አቤል" →
+  31=full name=አቤል  AND  11=half name=አስጎም → book_multiple
+  JSON: {"action":"book_multiple","bookings":[{"number":31,"type":"full","name":"አቤል"},{"number":11,"type":"half","name":"አስጎም"}],"reply":"እሺ ሁሉም ተይዟል 🙏"}
+"21 mulu dawit 31 gmash sara"   → 21=full name=dawit, 31=half name=sara → book_multiple
+"11 abel 21+ tigist"            → 11=full name=abel,  21=half name=tigist → book_multiple
+"31 full abel 11 half asgom"    → 31=full name=abel,  11=half name=asgom → book_multiple
+"21 full abebe 41 gmash chaltu" → 21=full name=abebe, 41=half name=chaltu → book_multiple
+
 ════════════════════════════════════
  LANGUAGE UNDERSTANDING
 ════════════════════════════════════
@@ -664,6 +686,19 @@ NAME BOOKING keywords: በል, ብለህ, ብላ, bleh, blo, bl, yaz, hold, set,
 ያዝልኝ = ያዝ
 ይያዝልኝ = ያዝ
 ቁጥሩን ያዝ = ያዝ
+አስጎም = እሱንም = "him too / same name" (NOT a name!) → ቀዳሚ ስም ተጠቀም
+እሱንም = same as above → ቀዳሚ ስም ተጠቀም
+እሷንም = same as above → ቀዳሚ ስም ተጠቀም
+ደሞ = "also/and" → ቀዳሚ ስም ተጠቀም
+እንዲሁ = same → ቀዳሚ ስም ተጠቀም
+asgom = አስጎም = same name as before
+
+"31በሙሉ አቤል 11begmas አስጎም አቤል" →
+  31=full name=አቤል, 11=half name=አቤል (አስጎም=እሱንም=same name!)
+  JSON: {"action":"book_multiple","bookings":[{"number":31,"type":"full","name":"አቤል"},{"number":11,"type":"half","name":"አቤል"}],"reply":"እሺ አቤል ሁሉም ተይዟል 🙏"}
+"21 dawit 31 asgom" → 31 name=dawit (asgom=same name)
+"21 sara 31 እሷንም"  → 31 name=sara (እሷንም=same name)
+"21 abel 31+ demo"  → 31 name=abel (demo/ደሞ=same name)
 
 "65/21/41 ቢል"    → numbers=65,21,41  type=full  name=${bookingName} (ቢል=command!)
 "21 ቢል"          → number=21  type=full  name=${bookingName}
@@ -780,6 +815,27 @@ slash "/" = ሁለት የተለያዩ ቁጥሮች ናቸው — book_multiple!
 ሙሉ ያዘ + "+" → change_type half → "እሺ በግማሽ ተቀይሯል 🙏"
 ግማሽ ያዘ + ምልክት የለም → change_type full → "ሙሉ ሆኗል 🙏"
 
+★★★ CANCEL MULTIPLE — ብዙ ቁጥር ሰርዝ ★★★
+"71 81 arg"          → cancel_multiple numbers=[71,81]
+"71 81 mulu arg"     → cancel_multiple numbers=[71,81]  (mulu=ሙሉ ነበሩ — ሰርዝ ሁለቱም)
+"21 31 41 sriz"      → cancel_multiple numbers=[21,31,41]
+"71/81 arg"          → cancel_multiple numbers=[71,81]
+"የኔዎቹን ሁሉም በግማሽ አርግ" → user ያዛቸውን ሁሉ change_type_multiple → half
+"የኔዎቹን ሁሉም ሙሉ አርግ"   → user ያዛቸውን ሁሉ change_type_multiple → full
+cancel_multiple JSON: {"action":"cancel_multiple","numbers":[71,81],"reply":"እሺ ሁሉም ተሰርዟል 🙏"}
+
+★★★ VAGUE CHANGE — ምን እንደሚቀይር ካልታወቀ CLARIFY ★★★
+user "ቀይር" ወይም "change" ሲል — ምን እንደሚቀይር ካልጠቀሰ:
+→ ask_clarify ጠይቅ! አይደለም silent ሰርዝ/ቀይር!
+
+"ቀየርክ?"    → {"action":"ask_clarify","reply":"አልቀየርኩም ቤተሰብ 🙏 ምን ልቀይርልህ? ቁጥሩን ንገረኝ","confirmed_bookings":[],"unclear_numbers":[]}
+"change"    → {"action":"ask_clarify","reply":"ምን ልቀይር? ቁጥሩን ንገረኝ 🙏","confirmed_bookings":[],"unclear_numbers":[]}
+"ቀይርልኝ"   → {"action":"ask_clarify","reply":"የቱን ቁጥር ልቀይርልህ? 🙏","confirmed_bookings":[],"unclear_numbers":[]}
+"21 ቀይር"   → (ቁጥር አለ ግን ወደ ምን?) → {"action":"ask_clarify","reply":"21ን ወደ ምን ልቀይር? ሙሉ ወይስ ግማሽ? 🙏","confirmed_bookings":[],"unclear_numbers":[21]}
+"21 ወደ 31" → cancel_and_rebook (ቁጥር ተቀይሯል — ወደ ሌላ slot)
+"21 ሙሉ"   → change_type full (type ተቀይሯል)
+"21+"       → change_type half (type ተቀይሯል)
+
 ── CASE 3: ሌላ user ግማሽ slot ──
 → book_half_p2
 
@@ -788,6 +844,7 @@ slash "/" = ሁለት የተለያዩ ቁጥሮች ናቸው — book_multiple!
 
 ── CASE 5: CONTINUATION ──
 ታሪክ ውስጥ ask_clarify ካለ + user መለሰ → ቀጥል
+ታሪክ ውስጥ "የቱን ልቀይር?" ካለ + user ቁጥር መለሰ → ያ ቁጥር ቀይር
 
 ════════════════════════════════════
  OTHER INTENTS
@@ -964,12 +1021,14 @@ function executeAction(actionData, userId, data) {
     for (const b of bookings) {
       const num   = b.number;
       const btype = b.type || "full";
+      // እያንዳንዱ booking የራሱ ስም ሊኖረው ይችላል — ካልሆነ global name ተጠቀም
+      const bname = b.name || name;
       if (!num) continue;
       const [slotId, slot] = getSlotByNumber(num, data);
       if (slotId && !slot.type) {
         Object.assign(data.slots[slotId], {
           type: btype === "half" ? "half" : "full",
-          p1_id: userId, p1_name: name, p1_paid: false,
+          p1_id: userId, p1_name: bname, p1_paid: false,
           p2_id: null, p2_name: null, p2_paid: false,
         });
         changed = true;
