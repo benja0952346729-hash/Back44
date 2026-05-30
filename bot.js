@@ -32,6 +32,44 @@ async function groqCall(systemPrompt, userPrompt, maxTokens = 300, temperature =
   }
 }
 
+// ==================== REPLY HELPERS ====================
+
+const FULL_REPLIES = [
+  "እሺ ቤተሰብ ተይዟል 🙏",
+  "እሺ 🙏 ገቢ",
+  "ተይዟል ቤተሰብ 🙏",
+];
+
+function getFullReply(name) {
+  // አልፎ አልፎ ስም ይጠቀማል
+  const withName = `እሺ ${name} 🙏 ገቢ`;
+  const all = [...FULL_REPLIES, withName];
+  return all[Math.floor(Math.random() * all.length)];
+}
+
+function getHalfReply() {
+  return "እሺ በግማሽ ተይዟል 🙏";
+}
+
+function getFullChangedReply() {
+  return "ሙሉ ሆኗል 🙏";
+}
+
+function getP2JoinReply() {
+  return "እሺ በግማሽ ተይዟል 🙏";
+}
+
+function getMixedClarifyReply(halfNums, fullNums) {
+  const all = [...halfNums, ...fullNums].join(", ");
+  const full = fullNums.join(", ");
+  const opts = [
+    `ሁሉንም በግማሽ ልያዝ? ወይስ ${full} ሙሉ ናቸው?`,
+    `${full} ሙሉ ናቸው? ወይስ ሁሉም ግማሽ?`,
+    `ቤተሰብ ሁሉም ግማሽ ናቸው (${all})? ወይስ አንዳንዱ ሙሉ?`,
+  ];
+  return opts[Math.floor(Math.random() * opts.length)];
+}
+
 // ==================== LOTTERY TEMPLATE ====================
 const LOTTERY_TEMPLATE = `በ 400 ብር 5 ቁጥሮችን በተከታታይ በመያዝ እድሎን ይሞክሩ ለ 20 ሰው ብቻ ፈጣን ዕድል መልካም ዕድል
 
@@ -550,9 +588,12 @@ ${historyText}
 ★ ቁጥር + "+" ምልክት = ግማሽ (half)
 ★ ቁጥር ብቻ = ሙሉ (full)
 
+⚠️ ግማሽ ምልክቶች — ሁሉም "+" ማለት ናቸው:
+  11g, 11ግ, 11ግማ, 11ግማሽ, 11 ግማሽ, 11 half, 11 gmash, 11 haf, 11 gmas, 11 gmash, 11+ → ሁሉም ግማሽ ናቸው
+
 ── CASE 1: ነፃ slot ──
-"21+" → book_half_p1 (ግማሽ ያዝ)
-"21"  → book_full (ሙሉ ያዝ)
+"21+" ወይም "21ግ" → book_half_p1 → reply: "እሺ በግማሽ ተይዟል 🙏"
+"21"  → book_full → reply: [FULL_REPLY]
 
 ── CASE 2: የራሱ slot ዳግም ጠራ (SELF RE-BOOK) ──
 ⚠️ user ቀደም ሲል ያዘው slot ቁጥር ዳግም ጠራ:
@@ -560,12 +601,33 @@ ${historyText}
 - ምን ማለቱ ነው: "ሙሉ አርግልኝ"
 - → change_type full
 - reply: "ሙሉ ሆኗል 🙏"
+- ⚠️ ስም አትጨምር — "ሙሉ ሆኗል 🙏" ብቻ
 
 ── CASE 3: ሌላ user ግማሽ slot ጠራ (P2 JOIN) ──
 - slot ግማሽ ነው (p1 አለ)
 - ሌላ user ያ ቁጥር ጠራ ("21" ወይም "21+")
 - → book_half_p2
-- reply: "ሙሉ ሆኗል! [p1_name]+[this_user_name] 🙏"
+- reply: "እሺ በግማሽ ተይዟል 🙏"
+- ⚠️ ስም አትጨምር — "እሺ በግማሽ ተይዟል 🙏" ብቻ
+
+── CASE 4b: ቁጥሮች + አንዳንዱ ብቻ "+" ምልክት አለው (MIXED AMBIGUOUS) ──
+ምሳሌ: "51 56 61+" → 51 እና 56 ሙሉ ናቸው? ወይስ ሁሉም ግማሽ?
+→ action: "ask_clarify"
+→ reply field ውስጥ random clarify question:
+  - "ሁሉንም በግማሽ ልያዝ? ወይስ 51 እና 56 ሙሉ ናቸው?"
+  - "51 እና 56 ሙሉ ናቸው? ወይስ ሁሉም ግማሽ?"
+  - "ቤተሰብ ሁሉም ግማሽ ናቸው (51, 56, 61)? ወይስ አንዳንዱ ሙሉ?"
+→ confirmed_bookings: [] (ምንም ግልጽ የለም)
+→ unclear_numbers: [51, 56, 61]
+format: {"action":"ask_clarify","reply":"[random question]","confirmed_bookings":[],"unclear_numbers":[51,56,61]}
+
+⚠️ ነገር ግን ሁሉም ግማሽ ምልክት ካላቸው (91gmash 21half) → ቀጥታ ያዝ፣ አትጠይቅ
+
+[FULL_REPLY] ማለት እነዚህ ውስጥ አንዱ (random):
+- "እሺ ቤተሰብ ተይዟል 🙏"
+- "እሺ 🙏 ገቢ"
+- "ተይዟል ቤተሰብ 🙏"
+- "እሺ [nickname_or_name] 🙏 ገቢ" (አልፎ አልፎ ብቻ)
 
 ── CASE 4: አሻሚ input ──
 User ብዙ ቁጥሮች ጻፈ እና አንዳንዱ ግልጽ አይደለም:
@@ -615,6 +677,8 @@ format: {"action":"cancel_pending","reply":"እሺ ምንም አልያዝኩም 
 ════════════════════════════════════
 - የተያዘ slot (ሌላ ሰው) → {"action":"reply","reply":"ተቀድመሃል ቤተሰብ 🙏"}
 - እራሱ ያዘ → self re-book logic ተጠቀም
+- ቅሬታ፣ ስድብ፣ ቁጣ፣ "እኔ ቀድሜ ነበር"፣ "ከፍዬ ነበር"፣ ክርክር ሲሆን → {"action":"reply","reply":"እኔ የቢንያም online አጋዝ robot ነኝ ለማንኛውም ጥያቄ በ 0952346729 ይደውሉ 😍"}
+- ሎተሪ ጋር ምንም ግንኙነት የሌለው random ነገር (ሰላምታ፣ ሌላ ታሪክ፣ ወዘተ) ሲሆን → {"action":"ignore"} (ምንም አትምለስ)
 - ክፍያ screenshot → {"action":"reply","reply":"ተቀብዬአለሁ ✅ Admin ያረጋግጣል"}
 - leading zero: "01"=1
 - nickname ካለ ሁሌ nickname ተጠቀም
@@ -991,6 +1055,11 @@ bot.on("message:text", async (ctx) => {
   const actionData = await aiBrain(rawText, userId, userName, data);
   console.log("🧠 Action:", actionData);
 
+  // ── Handle ignore (off-topic) ──
+  if (actionData.action === "ignore") {
+    return;
+  }
+
   // ── Handle cancel_pending ──
   if (actionData.action === "cancel_pending") {
     await deletePending(userId);
@@ -1091,33 +1160,26 @@ bot.on("message:text", async (ctx) => {
     if (filled === 20) {
       await ctx.reply("🎉 ሁሉም slots ተሞልቷል! ዕጣ ቅርብ ነው! 🎰");
     }
+  }
 
-    // After booking: check if any of user's new slots are half and offer p2
-    const userSlots = getUserSlots(userId, result.data);
-    for (const { slot } of userSlots) {
-      if (slot.type === "half" && !slot.p2_id) {
-        const firstNum = slot.numbers[0];
-        // Only notify if this was a new booking
-        const wasJustBooked = result.data.slots[
-          Object.keys(result.data.slots).find(k =>
-            result.data.slots[k].numbers[0] === firstNum
-          )
-        ];
-        if (wasJustBooked) {
-          // Small delay then notify
-          setTimeout(async () => {
-            await bot.api.sendMessage(chatId,
-              `ቤተሰብ ${firstNum} ግማሽ ነው — ሌላ ሰው ቢቀላቀል ቦታ አለ 🙏`
-            );
-          }, 1500);
-          break;
-        }
-      }
+  // Smart reply based on action type
+  const bookingName2 = (await getUserNickname(userId)) || userName;
+  let finalReply = result.reply;
+  if (result.changed) {
+    const act = actionData.action;
+    if (act === "book_half_p1") {
+      finalReply = getHalfReply();
+    } else if (act === "book_full" || act === "book_multiple") {
+      finalReply = getFullReply(bookingName2);
+    } else if (act === "change_type" || act === "change_type_multiple") {
+      finalReply = getFullChangedReply();
+    } else if (act === "book_half_p2") {
+      finalReply = getP2JoinReply();
     }
   }
 
-  await saveUserChatMessage(userId, "assistant", result.reply);
-  await ctx.reply(result.reply || "✅ ተይዟል!");
+  await saveUserChatMessage(userId, "assistant", finalReply);
+  await ctx.reply(finalReply || "✅ ተይዟል!");
 });
 
 bot.catch((err) => {
